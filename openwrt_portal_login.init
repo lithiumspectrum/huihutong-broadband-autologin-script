@@ -1,0 +1,52 @@
+#!/bin/sh /etc/rc.common
+#
+# portal_login v5（Python 守护）— 慧湖通门户自动认证
+#
+# 特性：
+#   - OPEN_ID 唯一凭证，satoken 自动换发/缓存/401 自愈（无人值守）
+#   - 断网检测记录（JSONL + 实时状态文件），可 CLI 开关
+#   - 易断网时间窗内自动加速探测，离线指数退避快速重连
+#
+# 部署：
+#   代码目录  /usr/local/lib/portal_login/（含 portal_login/ 与 tools/）
+#   配置文件  /etc/portal_login.conf（INI，chmod 600）
+#   依赖      python3-light（标准库即可，无需 pip）
+#
+# 管理：
+#   /etc/init.d/portal_login enable|start|stop|restart|reload|status
+#   reload 发送 SIGHUP 热重载配置
+#
+START=99
+USE_PROCD=1
+
+PROG_DIR=/usr/local/lib/portal_login
+
+start_service() {
+	[ -x /usr/bin/python3 ] || { echo "python3 未安装：opkg install python3-light（24.10+ 用 apk add）"; return 1; }
+
+	procd_open_instance
+	procd_set_param command /usr/bin/python3 -m portal_login daemon
+	procd_set_param env PYTHONPATH="$PROG_DIR"
+	# 10 秒内崩溃视为异常；30 秒后重启；连续 5 次后放弃
+	procd_set_param respawn 10 30 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+reload_service() {
+	procd_send_signal portal_login HUP
+}
+
+status_service() {
+	if pgrep -f "portal_login daemon" >/dev/null 2>&1; then
+		echo "portal_login: running"
+	else
+		echo "portal_login: stopped"
+	fi
+	PYTHONPATH="$PROG_DIR" /usr/bin/python3 -m portal_login status
+}
+
+service_triggers() {
+	procd_add_reload_trigger "portal_login"
+}
