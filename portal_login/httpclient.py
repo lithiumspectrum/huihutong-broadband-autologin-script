@@ -37,7 +37,8 @@ class Response:
         return self.body.decode("utf-8", errors="replace")
 
     def location(self):
-        return self.headers.get("Location") or self.headers.get("location")
+        # HTTPMessage.get 本身大小写不敏感，无需小写回退
+        return self.headers.get("Location")
 
 
 def _ssl_context():
@@ -62,22 +63,29 @@ class HttpClient:
         self._conns = {}
         self._user_agent = user_agent
 
+    @staticmethod
+    def _split(url):
+        """解析 URL，返回 (urlsplit 结果, 连接缓存键)。端口解析只此一处。"""
+        parts = urlsplit(url)
+        scheme = parts.scheme.lower()
+        port = parts.port or (443 if scheme == "https" else 80)
+        return parts, (scheme, parts.hostname, port)
+
     def _make_conn(self, scheme, host, port, timeout):
         if scheme == "https":
             return http.client.HTTPSConnection(host, port, timeout=timeout,
                                                context=_ssl_context())
         return http.client.HTTPConnection(host, port, timeout=timeout)
 
-    def _get_conn(self, scheme, host, port, timeout):
-        key = (scheme, host, port)
+    def _get_conn(self, key, timeout):
         conn = self._conns.get(key)
         if conn is None:
+            scheme, host, port = key
             conn = self._make_conn(scheme, host, port, timeout)
             self._conns[key] = conn
         return conn
 
-    def _drop_conn(self, scheme, host, port):
-        key = (scheme, host, port)
+    def _drop_conn(self, key):
         conn = self._conns.pop(key, None)
         if conn is not None:
             try:
@@ -86,10 +94,7 @@ class HttpClient:
                 pass
 
     def _raw_request(self, url, headers, timeout):
-        parts = urlsplit(url)
-        scheme = parts.scheme.lower()
-        host = parts.hostname
-        port = parts.port or (443 if scheme == "https" else 80)
+        parts, key = self._split(url)
         path = parts.path or "/"
         if parts.query:
             path += "?" + parts.query
@@ -98,7 +103,7 @@ class HttpClient:
         if headers:
             req_headers.update(headers)
 
-        conn = self._get_conn(scheme, host, port, timeout)
+        conn = self._get_conn(key, timeout)
         conn.request("GET", path, headers=req_headers)
         resp = conn.getresponse()
         body = resp.read()  # 必须读完，连接才能复用
@@ -114,15 +119,13 @@ class HttpClient:
         for hop in range(max_redirects + 1):
             try:
                 resp = self._raw_request(current, headers, timeout)
-            except _CONN_ERRORS as exc:
-                parts = urlsplit(current)
-                scheme = parts.scheme.lower()
-                self._drop_conn(scheme, parts.hostname,
-                                parts.port or (443 if scheme == "https" else 8))
+            except _CONN_ERRORS:
+                self._drop_conn(self._split(current)[1])
                 try:
                     resp = self._raw_request(current, headers, timeout)
-                except _CONN_ERRORS as exc2:
-                    raise HttpClientError("请求失败: %s (%s)" % (current, exc2))
+                except _CONN_ERRORS as exc:
+                    raise HttpClientError(
+                        "请求失败: %s (%s)" % (current, exc)) from exc
 
             if (not allow_redirects or resp.status not in self.REDIRECT_STATUS
                     or not resp.location()):

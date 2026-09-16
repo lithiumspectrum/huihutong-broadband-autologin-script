@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import sys
 import tempfile
 
@@ -124,6 +125,7 @@ def cmd_selftest(args):
         finally:
             server.shutdown()
             _restore_env(saved_env)
+            shutil.rmtree(tmp, ignore_errors=True)
 
         # 场景 2：完整链路 302→SSO→换token→oauth→eportal→204
         tmp = tempfile.mkdtemp(prefix="pl_test_chain_")
@@ -158,6 +160,7 @@ def cmd_selftest(args):
         finally:
             server.shutdown()
             _restore_env(saved_env)
+            shutil.rmtree(tmp, ignore_errors=True)
 
         # 场景 3：oauth 首次 401 → 重新换发 token 重试成功
         tmp = tempfile.mkdtemp(prefix="pl_test_401_")
@@ -173,6 +176,7 @@ def cmd_selftest(args):
         finally:
             server.shutdown()
             _restore_env(saved_env)
+            shutil.rmtree(tmp, ignore_errors=True)
 
         # 场景 4：运行时控制文件关闭检测 → 照常认证但不写断网记录
         tmp = tempfile.mkdtemp(prefix="pl_test_off_")
@@ -192,6 +196,7 @@ def cmd_selftest(args):
         finally:
             server.shutdown()
             _restore_env(saved_env)
+            shutil.rmtree(tmp, ignore_errors=True)
 
     finally:
         _restore_env(saved_env)
@@ -210,7 +215,7 @@ def main(argv=None):
     parser.add_argument("--config", help="配置文件路径（默认 /etc/portal_login.conf）")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("daemon", help="启动守护进程（默认）")
+    sub.add_parser("daemon", help="启动守护进程")
     sub.add_parser("once", help="只执行一次检测/认证")
     sub.add_parser("status", help="查看实时状态（JSON）")
 

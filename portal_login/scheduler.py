@@ -93,11 +93,13 @@ class Daemon:
             return True
 
         self.recorder.mark_offline(result.detail(), result.code)
-        login = perform_login(self.cfg, self.client, self.tokens, self._log)
+        # 本拍探测结果直接传入登录流程复用（redirect 已在手），
+        # 不再重复探测；perform_login 放行后自带 204/success.jsp 复核
+        login = perform_login(self.cfg, self.client, self.tokens, self._log,
+                              probe_result=result)
         self.recorder.note_attempt(login)
-        # 立即复核，成功则在同一拍内完成 offline→online 转换并写出 outage_summary
-        verify = probe(self.client, self.cfg.PROBE_URL, self.cfg.PROBE_TIMEOUT)
-        if verify.online:
+        if login.success:
+            # 同一拍内完成 offline→online 转换并写出 outage_summary
             self.recorder.mark_online()
             return True
         return False
@@ -134,7 +136,8 @@ class Daemon:
                 self._reload = False
                 try:
                     self.cfg.reload()
-                    self.recorder.detection_enabled = self.cfg.DETECT_ENABLED
+                    # detection_enabled 无需手动同步：下一拍 tick 开头的
+                    # refresh_control() 会按控制文件/配置重新判定
                     self._log.info("配置已热重载")
                 except Exception as exc:
                     self._log.error("配置重载失败（沿用旧配置）：%s", exc)

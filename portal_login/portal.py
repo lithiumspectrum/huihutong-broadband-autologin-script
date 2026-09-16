@@ -8,7 +8,7 @@
 """
 
 import json
-from urllib.parse import quote, urlencode
+from urllib.parse import quote
 
 from .auth import AuthError
 from .detector import probe
@@ -49,12 +49,12 @@ def extract_portal_url(client, entry, timeout=15):
 
 def _oauth_once(client, cfg, token, portal_url, timeout):
     """调一次 oauthRedirect。返回 (status_code, json_dict, raw_text)。"""
-    params = urlencode({
-        "response_type": "code",
-        "client_id": cfg.CLIENT_ID,
-        "redirect_uri": portal_url,
-        "serviceName": cfg.SERVICE_NAME,
-    }, quote_via=quote)
+    # quote(s, safe="") 与前端 encodeURIComponent 对本组参数编码结果一致
+    # （urlencode 默认的 quote_via=quote 会把 '/' 留为裸字符，与前端不同）
+    params = ("response_type=code&client_id=%s&redirect_uri=%s&serviceName=%s"
+              % (quote(cfg.CLIENT_ID, safe=""),
+                 quote(portal_url, safe=""),
+                 quote(cfg.SERVICE_NAME, safe="")))
     url = "%s/ac/auth/oauthRedirect?%s" % (cfg.API_BASE.rstrip("/"), params)
     resp = client.get(url, headers={"satoken": token}, timeout=timeout)
     try:
@@ -63,9 +63,14 @@ def _oauth_once(client, cfg, token, portal_url, timeout):
         return resp.status, None, resp.text
 
 
-def perform_login(cfg, client, tokens, logger):
-    """执行一次完整上线；401 时用 OPEN_ID 重新换发 token 并重试一次。"""
-    probe_result = probe(client, cfg.PROBE_URL, cfg.PROBE_TIMEOUT)
+def perform_login(cfg, client, tokens, logger, probe_result=None):
+    """执行一次完整上线；401 时用 OPEN_ID 重新换发 token 并重试一次。
+
+    probe_result：调用方（守护 tick）本拍已完成的探测结果，传入则复用，
+    避免一拍内对同一探测 URL 发两次请求。
+    """
+    if probe_result is None:
+        probe_result = probe(client, cfg.PROBE_URL, cfg.PROBE_TIMEOUT)
     if probe_result.online or not probe_result.redirect:
         return LoginResult(False, "probe",
                            "无需登录或无门户入口: %s" % probe_result.detail(),

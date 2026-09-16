@@ -35,7 +35,9 @@ start_service() {
 }
 
 reload_service() {
-	procd_send_signal portal_login HUP
+	# procd_send_signal(service, [instance], [signal])：第二参数是实例名，
+	# 匿名实例自动命名 instance1；用 '*' 匹配全部实例才能把 HUP 送达
+	procd_send_signal portal_login '*' HUP
 }
 
 status_service() {
@@ -47,6 +49,6 @@ status_service() {
 	PYTHONPATH="$PROG_DIR" /usr/bin/python3 -m portal_login status
 }
 
-service_triggers() {
-	procd_add_reload_trigger "portal_login"
-}
+# 注：配置是 INI（/etc/portal_login.conf），不是 UCI，
+# 所以不提供 procd_add_reload_trigger（对不存在的 UCI 配置永远不会触发）；
+# 改完配置用 /etc/init.d/portal_login reload 发 SIGHUP 热重载。

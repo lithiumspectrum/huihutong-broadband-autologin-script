@@ -33,27 +33,6 @@ _DEFAULTS = {
     "DETECT_ENABLED": ("daemon", True, bool),
 }
 
-# 环境变量名 → 键
-_ENV_MAP = {
-    "OPEN_ID": "OPEN_ID",
-    "SERVICE_NAME": "SERVICE_NAME",
-    "CLIENT_ID": "CLIENT_ID",
-    "API_BASE": "API_BASE",
-    "INTERVAL": "INTERVAL",
-    "WATCH_INTERVAL": "WATCH_INTERVAL",
-    "WATCH_WINDOWS": "WATCH_WINDOWS",
-    "RETRY_BASE": "RETRY_BASE",
-    "RETRY_CAP": "RETRY_CAP",
-    "JITTER": "JITTER",
-    "PROBE_TIMEOUT": "PROBE_TIMEOUT",
-    "API_TIMEOUT": "API_TIMEOUT",
-    "PROBE_URL": "PROBE_URL",
-    "STATE_FILE": "STATE_FILE",
-    "OUTAGE_LOG": "OUTAGE_LOG",
-    "TOKEN_CACHE": "TOKEN_CACHE",
-    "DETECT_ENABLED": "DETECT_ENABLED",
-}
-
 _BOOL_TRUE = {"1", "yes", "true", "on", "y"}
 
 
@@ -132,7 +111,6 @@ class Config:
 
         支持跨午夜窗口（如 23:50-00:10）。
         """
-        from datetime import time as dtime
         now = (now or datetime_now()).time()
         windows = parse_windows(self._values["WATCH_WINDOWS"])
         if not windows:

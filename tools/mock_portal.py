@@ -47,9 +47,11 @@ def start_mock(scenario="chain"):
             if location:
                 self.send_header("Location", location)
             self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(body)))
+            # 204/304 按 RFC 不得携带 Content-Length 与 body
+            if status not in (204, 304):
+                self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            if self.command != "HEAD":
+            if self.command != "HEAD" and status not in (204, 304):
                 self.wfile.write(body)
 
         def _json(self, status, obj):

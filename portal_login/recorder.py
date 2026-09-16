@@ -67,8 +67,11 @@ class Recorder:
         payload = json.dumps(
             {"enabled": enabled, "changed_at": now_iso()},
             ensure_ascii=False)
-        with open(path, "w", encoding="utf-8") as fh:
+        # 原子替换，避免守护进程恰好读到半写入文件
+        fd, tmp = tempfile.mkstemp(prefix=".control.", dir=directory or ".")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(payload)
+        os.replace(tmp, path)
 
     # ------------------------------------------------------------- 事件
     def mark_online(self):
@@ -122,9 +125,11 @@ class Recorder:
     def note_attempt(self, result):
         """记录一次上线尝试结果（日志 + 状态文件 last_error）。
 
-        attempts 在每个离线周期内按登录尝试次数累计（每拍一次）。
+        attempts 只累计真正发起了认证的次数；probe 阶段失败
+        （探测异常/无门户入口，未发起认证）的拍不计入。
         """
-        self.attempts += 1
+        if result.stage != "probe":
+            self.attempts += 1
         if result.success:
             self._log.info("上线动作成功：%s", result.message)
         else:
