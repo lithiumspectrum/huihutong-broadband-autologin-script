@@ -136,6 +136,8 @@ watch_interval = 5              ; 时间窗内探测间隔（秒）
 | `state_file` | daemon | `/tmp/portal_login/state.json` | 实时状态（tmpfs） |
 | `outage_log` | daemon | `/etc/portal_login/outages.jsonl` | 断网历史（持久化） |
 | `token_cache` | daemon | `/tmp/portal_login/token.json` | token 缓存（tmpfs，0600） |
+| `alert_after` | daemon | `10` | 连续**认证**失败多少拍后落一条持久化告警 |
+| `alert_log` | daemon | `/etc/portal_login/alerts.jsonl` | 持久化告警（每事件一条，不刷 flash） |
 
 > ✅ **改过 `phone` / `user_uid` 后无需手动清缓存**：token 缓存文件里记了凭证指纹，
 > 与当前配置不符时会自动丢弃并重新换发（自测场景⑤覆盖）。改完 `restart` 或 `reload` 即可。
@@ -149,7 +151,7 @@ python3 -m portal_login daemon      # 守护主循环（前台运行，适合 sy
 python3 -m portal_login once        # 只跑一拍：在线退 0，离线立即登录，成功 0/失败 1
 python3 -m portal_login status      # 实时状态 JSON
 python3 -m portal_login detect off  # 关闭断网记录（照常认证，适合割接演练）
-python3 -m portal_login selftest    # 本机 mock 全链路自测，20 项断言
+python3 -m portal_login selftest    # 本机 mock 全链路自测，25 项断言
 ```
 
 > `selftest` 依赖仓库中的 `tools/mock_portal.py`（模拟整条门户链路），

@@ -59,12 +59,13 @@ def cmd_detect(args):
 
 # --------------------------------------------------------------------- selftest
 
-def _selftest_config(tmpdir, base, detect_enabled=True):
+def _selftest_config(tmpdir, base, detect_enabled=True, alert_after=10):
     """写临时 INI 并返回 Config（同时屏蔽机器上的环境变量覆盖）。"""
     saved = {}
     for key in ("PHONE", "USER_UID", "SERVICE_NAME", "CLIENT_ID", "API_BASE",
                 "INTERVAL", "WATCH_INTERVAL", "WATCH_WINDOWS", "PROBE_URL",
-                "STATE_FILE", "OUTAGE_LOG", "TOKEN_CACHE", "DETECT_ENABLED"):
+                "STATE_FILE", "OUTAGE_LOG", "TOKEN_CACHE", "DETECT_ENABLED",
+                "ALERT_AFTER", "ALERT_LOG"):
         if key in os.environ:
             saved[key] = os.environ.pop(key)
 
@@ -83,8 +84,10 @@ def _selftest_config(tmpdir, base, detect_enabled=True):
             "state_file = %s/state.json\n"
             "outage_log = %s/outages.jsonl\n"
             "token_cache = %s/token.json\n"
+            "alert_after = %d\n"
+            "alert_log = %s/alerts.jsonl\n"
             "detect_enabled = %s\n"
-            % (base, base, tmpdir, tmpdir, tmpdir,
+            % (base, base, tmpdir, tmpdir, tmpdir, alert_after, tmpdir,
                "yes" if detect_enabled else "no"))
     return Config(path), saved
 
@@ -204,7 +207,8 @@ def cmd_selftest(args):
             _restore_env(saved_env)
             shutil.rmtree(tmp, ignore_errors=True)
 
-        # 场景 5：改凭证后磁盘 token 缓存必须失效（防静默沿用旧账号会话）
+        # 场景 5：改凭证后内存与磁盘 token 缓存都必须失效
+        # （守护改配置走 SIGHUP reload，进程内 token 若不作废会静默用旧账号）
         tmp = tempfile.mkdtemp(prefix="pl_test_cred_")
         base, state, server = start_mock("online")
         try:
@@ -212,18 +216,47 @@ def cmd_selftest(args):
             cfg, saved_env = _selftest_config(tmp, base)
             d = Daemon(cfg)
             d._log.setLevel(logging.ERROR)
-            TokenManager(cfg, d.client, d._log).get_token()   # 旧凭证写一份缓存
-            check("⑤改凭证：缓存已落盘", os.path.isfile(cfg.TOKEN_CACHE))
+            tm = TokenManager(cfg, d.client, d._log)
+            tm.get_token()                                     # 旧凭证换一次
+            check("⑤改凭证：磁盘缓存已落盘", os.path.isfile(cfg.TOKEN_CACHE))
+            check("⑤改凭证：同凭证二次取用命中缓存", state.mint_count == 1)
 
-            os.environ["USER_UID"] = "mock-uid-changed"        # 换认证码
+            os.environ["USER_UID"] = "mock-uid-changed"        # 模拟改认证码
+            cfg.reload()
+            tm.get_token()
+            check("⑤改凭证：内存 token 作废并重新换发", state.mint_count == 2)
+
+            # 新建实例只读磁盘，也必须拒绝旧指纹
+            os.environ["USER_UID"] = "mock-uid-changed-again"
             cfg.reload()
             TokenManager(cfg, d.client, d._log).get_token()
-            check("⑤改凭证：旧缓存被丢弃并重新换发", state.mint_count == 2)
+            check("⑤改凭证：磁盘缓存旧指纹被拒并重换", state.mint_count == 3)
             with open(cfg.TOKEN_CACHE, encoding="utf-8") as fh:
                 check("⑤改凭证：缓存已按新凭证重写",
-                      json.load(fh).get("token") == "mock-token-2")
+                      json.load(fh).get("token") == "mock-token-3")
         finally:
             os.environ.pop("USER_UID", None)
+            server.shutdown()
+            _restore_env(saved_env)
+            shutil.rmtree(tmp, ignore_errors=True)
+
+        # 场景 6：连续认证失败达阈值 → 往持久化 ALERT_LOG 落一条（且只落一条）
+        tmp = tempfile.mkdtemp(prefix="pl_test_alert_")
+        base, state, server = start_mock("authfail")
+        try:
+            cfg, saved_env = _selftest_config(tmp, base, alert_after=2)
+            d = Daemon(cfg)
+            d._log.setLevel(logging.CRITICAL)
+            d.tick()
+            check("⑥连续失败：未达阈值不写告警", not os.path.isfile(cfg.ALERT_LOG))
+            d.tick()
+            d.tick()
+            alerts = _read_jsonl(cfg.ALERT_LOG)
+            check("⑥连续失败：达到阈值后写入持久化告警", len(alerts) == 1)
+            check("⑥连续失败：告警含失败阶段与尝试次数（且只落一条）",
+                  alerts and alerts[0].get("stage") == "token"
+                  and alerts[0].get("attempts") == 2)
+        finally:
             server.shutdown()
             _restore_env(saved_env)
             shutil.rmtree(tmp, ignore_errors=True)

@@ -45,7 +45,7 @@ scp tools/mock_portal.py root@192.168.1.1:/root/portal_login/tools/
 
 # 路由器上
 cd /root/portal_login
-PYTHONPATH=. python3 -m portal_login selftest      # 期望 20/20
+PYTHONPATH=. python3 -m portal_login selftest      # 期望 25/25
 PYTHONPATH=. python3 -m portal_login status        # 实时状态 JSON
 PYTHONPATH=. python3 -m portal_login once 2>&1 | tail -20   # 断网时验证实链路
 /etc/init.d/portal_login restart                   # 改代码后必须重启守护
@@ -541,9 +541,10 @@ procd 以 `python3 -m portal_login daemon` 启动并 respawn；配置为 INI（�
 
 **2026-09-18 换凭证后复测（当前状态：已上线运行）**
 
-- `selftest` **20/20**：①已在线无动作、②302→SSO→loginByPhoneAndUid→oauth→eportal 单拍恢复、
+- `selftest` **25/25**：①已在线无动作、②302→SSO→loginByPhoneAndUid→oauth→eportal 单拍恢复、
   ③401 自动重换 token 二次成功（mint×2/oauth×2）、④detect off 照常认证但不写记录、
-  ⑤改凭证后磁盘 token 缓存自动失效重换（防静默沿用旧账号会话）。
+  ⑤改凭证后**内存与磁盘** token 缓存都自动失效重换（防静默沿用旧账号会话）、
+  ⑥连续认证失败达 `alert_after` 后落**持久化告警**且每事件只落一条。
 - 本机（Windows）经 v5 自身 httpclient（含 TLS 校验）调 `loginByPhoneAndUid` 成功取 token；
   缓存命中返回同一 token，invalidate 后重取得到不同 token（rnStr 随机性符合预期）。
 - **路由器现场端到端成功**（`PYTHONPATH=. python3 -m portal_login once`）：
@@ -597,7 +598,8 @@ procd 以 `python3 -m portal_login daemon` 启动并 respawn；配置为 INI（�
 | 运营商 | chinaMobile（页面第 3 按钮） |
 | 强制下线 | 每日约 12:00，手机号+认证码 模式 30s 内自动恢复 |
 | client_id | `6d6bc6f3b5f04107a5fc1c62e39dd5f4`（改版前固定） |
-| 守护实现 | Python v5（纯标准库，2026-09-18 换凭证）：selftest 20/20、路由器现场端到端通过；shell v4 已删除 |
+| 守护实现 | Python v5（纯标准库，2026-09-18 换凭证）：selftest 25/25、路由器现场端到端通过；shell v4 已删除 |
+| 长期故障追溯 | `/etc/portal_login/alerts.jsonl`：连续**认证**失败 `alert_after`（默认 10）拍落一条，每事件一条；网络全断不告警，看 `outages.jsonl`（15.1 第 5 点） |
 
 ## 14. 证据目录导览
 
@@ -629,16 +631,20 @@ procd 以 `python3 -m portal_login daemon` 启动并 respawn；配置为 INI（�
 - 本文件与所有归档样例保持脱敏；真实凭证只存在路由器本地配置。
 - **`captures/` 里的 HAR 全部含真实凭证**（手机号、认证码、JWT）。虽然 `.gitignore`
   已排除，但复制/打包/上传仓库时务必确认它没被带上。要长期归档建议先脱敏。
+- **`reference/scratch` 同样含明文凭证**（宽带账号 + 密码、以及一个 `openid=`），
+  也已被 `.gitignore` 排除（`reference/`）。它是宽带绑定路线未决期的一次性实测脚本，
+  有留档价值但**切勿外发**；宽带绑定若最终定论，应脱敏后再并入正式文档。
 - 脚本默认禁用代理环境变量（`http_proxy/https_proxy/ALL_PROXY`），认证流量走 WAN 直连；
   开代理可能导致 eportal 内网地址不可达或源 IP 不匹配。
 - 自动认证只解决“WAN 口放行”，多设备共享的隐蔽性由上级 README 的 UA2F + rkp-ipid 负责，二者缺一不可。
 
-### 15.1 运维注意（三个要点）
+### 15.1 运维注意（五个要点）
 
 1. **改 `phone` / `user_uid` 无需手动清 token 缓存**：缓存文件里存了凭证指纹
    （`sha256(phone\0uid)` 前 16 位，不存明文），与当前配置不符时
-   `TokenManager._load_disk()` 会告警并丢弃、重新换发。`restart` / `reload` 后直接生效。
-   只改 `service_name` / 时间窗等无凭证项则完全无关。
+   **内存 token 与磁盘缓存都会被作废**并重新换发（`TokenManager.get_token()`）。
+   `restart` 直接生效；`reload`（SIGHUP）也生效——内存那层同样比对指纹，
+   所以热重载改凭证不会继续用旧账号会话。只改 `service_name` / 时间窗等无凭证项则完全无关。
    （历史：早期版本无指纹，缓存落在 tmpfs 且 `restart` 不清空，会**静默沿用旧账号会话**。）
 2. **认证码填错时的重试频率**：换 token 失败不会写缓存，于是**每一拍都会重试一次登录接口**
    （时间窗内 5s 一次，常态 30s 一次）。这是设计使然，但若日志持续出现
@@ -648,6 +654,48 @@ procd 以 `python3 -m portal_login daemon` 启动并 respawn；配置为 INI（�
 3. **两个“portal_login”路径别混淆**：配置文件是 **文件** `/etc/portal_login.conf`，
    断网日志在 **目录** `/etc/portal_login/` 下（`outages.jsonl`）。二者互不干扰，
    但删文件时容易误删目录。
+4. **凭证缺失与凭证错误的失败形态完全不同**（都**有日志**，不是静默）：
+
+   | 情形 | 行为 | procd 能否兜底 | 自愈 |
+   |---|---|---|---|
+   | **缺失**（`phone`/`user_uid` 为空） | `run()` 打 `未配置 phone / user_uid` 后 `return 2`，进程退出 | 能：`respawn 10 30 5` 连退 5 次，**之后永久放弃** | 不能，须手动 `restart` |
+   | **填错**（非空但认证码错） | 不退出。每拍 `loginByPhoneAndUid` 失败 → `AuthError` 被 tick 捕获打 `exception` → 回退重试 | 不需要（进程一直活着） | 不能，会一直试探登录接口 |
+
+   所以：**"procd 放弃重启"只会由"缺失"触发**，且放弃前已刷过 5 次 error 日志；
+   长期无人看日志时，可 `logread | grep portal_login` 回查。要彻底自愈把
+   `respawn` 第三个参数改 `0`（无限重试），代价是真故障时每 30s 刷一次日志。
+
+   **但 logread 本身不可靠**：它是环形缓冲且**重启即失**。所以"填错"这类
+   会持续数天的故障，光靠 syslog 事后无从追溯——这就是第 5 点的由来。
+5. **持久化告警（`/etc/portal_login/alerts.jsonl`）**：连续**认证**失败达 `alert_after`
+   （默认 10）拍时落一条，**每次离线事件只落一条**，不会刷 flash。
+   它解决的是"长期故障 + 重启后无从追溯"这个缺口：
+
+   **⚠️ 两类故障的分工（别指望一个文件看全）**：
+
+   | 故障形态 | `attempts` 是否累加 | 记在哪 |
+   |---|---|---|
+   | 认证码错 / token 换发失败（stage `token`） | 是 | **`alerts.jsonl`** |
+   | 协议层失败（stage `oauth` / `eportal` / `verify` / `portal_extract`） | 是 | **`alerts.jsonl`** |
+   | **无门户入口 / WAN 全断**（stage `probe`，压根没发认证请求） | **否** | 只在 `outages.jsonl` 的 `offline_start` |
+
+   即：**网络全断不会产生告警**，查那类问题看 `outages.jsonl`。
+
+   ```sh
+   cat /etc/portal_login/alerts.jsonl        # 看历史上有没有发生过长期认证失败
+   ```
+
+   ```json
+   {"event":"alert","ts":"2026-09-19T03:12:07+08:00","stage":"token",
+    "message":"loginByPhoneAndUid 未返回 token: code=500 message=认证码错误",
+    "attempts":10,"offline_start":"2026-09-19T03:07:31+08:00","offline_s":276.0,
+    "hint":"连续认证失败，检查 phone/user_uid 与网络（见 PROTOCOL_NOTES 15.1）"}
+   ```
+
+   - `stage` 直接指出卡在哪一步：`token` = 凭证/换 token 问题；
+     `portal_extract` / `oauth` / `eportal` / `verify` = 协议层问题（对照 15.2）。
+   - 恢复在线时计数归零，下个离线事件可再次告警。
+   - `detect off`（割接演练）期间不写告警，与 `outages.jsonl` 行为一致。
 
 ### 15.2 已知脆弱点（改版时优先怀疑）
 

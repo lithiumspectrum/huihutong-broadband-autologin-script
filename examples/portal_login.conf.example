@@ -57,3 +57,9 @@ watch_interval = 5
 
 # token 缓存（tmpfs，0600）
 # token_cache = /tmp/portal_login/token.json
+
+# 连续失败多少拍后落一条持久化告警（每次离线事件只落一条，不刷 flash）
+# alert_after = 10
+
+# 持久化告警文件（overlay 持久化）。syslog 重启即失，长期故障靠这条追溯
+# alert_log = /etc/portal_login/alerts.jsonl

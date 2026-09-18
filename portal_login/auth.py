@@ -27,6 +27,7 @@ class TokenManager:
         self._client = client
         self._log = logger
         self._token = None
+        self._token_cred = None      # 内存 token 对应的凭证指纹
 
     # ------------------------------------------------------------------ 内部
     def _cred_fingerprint(self):
@@ -105,16 +106,27 @@ class TokenManager:
 
     # ------------------------------------------------------------------ 对外
     def get_token(self, force_refresh=False):
-        """获取可用 token；force_refresh 时强制调 loginByPhoneAndUid 换新。"""
+        """获取可用 token；force_refresh 时强制调 loginByPhoneAndUid 换新。
+
+        内存与磁盘缓存都要比对凭证指纹：配置经 SIGHUP 热重载改了
+        phone/user_uid 时，进程内还留着旧账号的 token，必须一并作废。
+        """
+        cred = self._cred_fingerprint()
         if not force_refresh:
-            if self._token:
+            if self._token and self._token_cred == cred:
                 return self._token
+            if self._token:      # 内存 token 已不属于当前凭证
+                self._log.warning("内存 token 与当前 phone/user_uid 不符，已作废")
+                self._token = None
+                self._token_cred = None
             disk = self._load_disk()
             if disk:
                 self._token = disk
+                self._token_cred = cred
                 return disk
         token = self._mint()
         self._token = token
+        self._token_cred = cred
         self._save_disk(token)
         self._log.info("已通过 手机号+认证码 换取新 satoken")
         return token
@@ -122,6 +134,7 @@ class TokenManager:
     def invalidate(self):
         """丢弃内存与磁盘缓存（401 后调用）。"""
         self._token = None
+        self._token_cred = None
         self._remove_disk()
 
 

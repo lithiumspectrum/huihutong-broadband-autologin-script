@@ -1,10 +1,15 @@
 """断网检测记录器。
 
-产出两类数据：
+产出三类数据：
   1. JSONL 事件流（OUTAGE_LOG）：offline_start / online_restored / outage_summary，
      每行一个 JSON，便于 jq / pandas 直接做数据分析；
   2. 实时状态文件（STATE_FILE）：当前在线状态、本次离线起始时间与持续秒数、
-     最近成功时间、检测开关状态——`status` 命令直接读取展示。
+     最近成功时间、检测开关状态——`status` 命令直接读取展示；
+  3. 持久化告警（ALERT_LOG）：连续**认证**失败达 ALERT_AFTER 拍时落一条。
+     存在理由：syslog（logread）是环形缓冲且重启即失，而"认证码填错"这类
+     长期故障会安静地一直重试，重启后无从追溯。每次离线事件只落一条，不刷 flash。
+     注意分工：未发起认证的 probe 阶段失败（无门户入口/WAN 断）不计入 attempts，
+     由 OUTAGE_LOG 的 offline_start 负责记录，不产生告警。
 
 检测总开关：
   - 配置 DETECT_ENABLED；
@@ -45,7 +50,8 @@ class Recorder:
         self.last_online = None         # iso str
         self.last_error = None
         self.detection_enabled = cfg.DETECT_ENABLED
-        self._jsonl_failed = False      # 日志路径不可写时只降级一次告警
+        self._alerted = False           # 本次离线事件是否已落过告警
+        self._jsonl_failed = set()      # 不可写的日志路径，只降级告警一次
 
     # ------------------------------------------------------------- 开关
     def refresh_control(self):
@@ -100,6 +106,7 @@ class Recorder:
         self.state = STATE_ONLINE
         self.offline_since = None
         self.attempts = 0
+        self._alerted = False
         self.last_online = now_iso()
         self.last_error = None
         self._write_state()
@@ -111,6 +118,7 @@ class Recorder:
             self.state = STATE_OFFLINE
             self.offline_since = datetime.now().astimezone()
             self.attempts = 0
+            self._alerted = False
             if self.detection_enabled:
                 self._append({
                     "event": "offline_start",
@@ -136,22 +144,57 @@ class Recorder:
             self.last_error = "%s: %s" % (result.stage, result.message)
             self._log.warning("上线尝试失败[%s]：%s", result.stage, result.message)
             self._write_state()
+            self._maybe_alert(result)
+
+    def _maybe_alert(self, result):
+        """连续认证失败达 ALERT_AFTER 拍时落一条持久化告警（每次离线事件仅一条）。
+
+        syslog 只活在 logread 环形缓冲里，重启即失；这条落在 overlay 上，
+        用于事后追溯"认证码填错"这类会一直安静重试的长期故障。
+
+        计数口径是 attempts（真正发起了认证的次数），所以 probe 阶段失败
+        （无门户入口 / WAN 断，压根没发认证请求）不会触发告警——那类故障
+        由 OUTAGE_LOG 的 offline_start 记录。
+        """
+        if self._alerted or not self.detection_enabled:
+            return
+        if self.attempts < self._cfg.ALERT_AFTER:
+            return
+        self._alerted = True
+        elapsed = None
+        if self.offline_since:
+            elapsed = round((datetime.now().astimezone()
+                             - self.offline_since).total_seconds(), 1)
+        self._append({
+            "event": "alert",
+            "ts": now_iso(),
+            "stage": result.stage,
+            "message": result.message,
+            "attempts": self.attempts,
+            "offline_start": (self.offline_since.isoformat(timespec="seconds")
+                              if self.offline_since else None),
+            "offline_s": elapsed,
+            "hint": "连续认证失败，检查 phone/user_uid 与网络（见 PROTOCOL_NOTES 15.1）",
+        }, self._cfg.ALERT_LOG)
+        self._log.error("连续 %d 拍认证失败[%s]：%s（已写入 %s）",
+                        self.attempts, result.stage, result.message,
+                        self._cfg.ALERT_LOG)
 
     # ------------------------------------------------------------- 输出
-    def _append(self, record):
-        if self._jsonl_failed:
+    def _append(self, record, path=None):
+        path = path or self._cfg.OUTAGE_LOG
+        if path in self._jsonl_failed:
             return
         try:
-            path = self._cfg.OUTAGE_LOG
             directory = os.path.dirname(path)
             if directory:
                 os.makedirs(directory, exist_ok=True)
             with open(path, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(record, ensure_ascii=False) + "\n")
         except OSError as exc:
-            self._jsonl_failed = True
-            self._log.warning("断网日志无法写入 %s（后续仅输出 syslog）：%s",
-                              self._cfg.OUTAGE_LOG, exc)
+            self._jsonl_failed.add(path)
+            self._log.warning("日志无法写入 %s（后续仅输出 syslog）：%s",
+                              path, exc)
 
     def _write_state(self):
         elapsed = None

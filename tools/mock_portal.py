@@ -94,6 +94,11 @@ def start_mock(scenario="chain"):
                     self._json(400, {"code": 400, "message": "bad json"})
                     return
                 state.last_auth_body = payload
+                if state.scenario == "authfail":
+                    # 模拟认证码填错：接口 200 但业务码失败，用于验证持久化告警
+                    self._json(200, {"success": False, "code": 500,
+                                     "message": "认证码错误"})
+                    return
                 if not payload.get("phone") or not payload.get("uid"):
                     self._json(200, {"success": False, "code": 500,
                                      "message": "手机号或 UID 缺失"})

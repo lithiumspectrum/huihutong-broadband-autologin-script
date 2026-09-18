@@ -34,6 +34,12 @@ _DEFAULTS = {
     "OUTAGE_LOG":     ("daemon", "/etc/portal_login/outages.jsonl", str),
     "TOKEN_CACHE":    ("daemon", "/tmp/portal_login/token.json", str),
     "DETECT_ENABLED": ("daemon", True, bool),
+    # 连续**认证**失败多少拍后往 ALERT_LOG 落一条持久化告警（每次离线事件只落一条）。
+    # 未发起认证的 probe 阶段失败（无门户入口/WAN 断）不计入，由 OUTAGE_LOG 记录。
+    # syslog 的 logread 是环形缓冲、重启即失，长期故障（如认证码填错）需要
+    # 一条落在 overlay 上的记录才能事后追溯。
+    "ALERT_AFTER":    ("daemon", 10, int),
+    "ALERT_LOG":      ("daemon", "/etc/portal_login/alerts.jsonl", str),
 }
 
 _BOOL_TRUE = {"1", "yes", "true", "on", "y"}
