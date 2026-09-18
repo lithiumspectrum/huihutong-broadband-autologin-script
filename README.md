@@ -167,10 +167,77 @@ python3 -m portal_login selftest    # 本机 mock 全链路自测，25 项断言
 {"event": "outage_summary", "start": "...", "end": "...", "duration_s": 6.12, "attempts": 1, "recovery": "portal_login"}
 ```
 
-分析示例：`jq -r 'select(.event=="outage_summary") | "\(.start)  \(.duration_s)s"' /etc/portal_login/outages.jsonl`
+分析示例（需 `opkg install jq`）：
+
+```sh
+# 每次断网的起始时间与耗时
+jq -r 'select(.event=="outage_summary") | "\(.start)  \(.duration_s)s  attempts=\(.attempts)"' \
+   /etc/portal_login/outages.jsonl
+
+# 只看到断网原因（探测返回了什么）
+jq -r 'select(.event=="offline_start") | "\(.ts)  \(.probe)"' \
+   /etc/portal_login/outages.jsonl
+
+# 统计次数与累计时长
+jq -s '[.[]|select(.event=="outage_summary")] | "共 \(length) 次，累计 \(map(.duration_s)|add)s"' \
+   /etc/portal_login/outages.jsonl
+```
+
+没装 jq 就用 `grep outage_summary /etc/portal_login/outages.jsonl | tail -20`。
 
 实时状态在 `state.json`（当前状态、离线已持续秒数、认证尝试次数、最近在线时间），
 `status` 命令直接输出。
+
+## 查看日志
+
+守护的运行日志走 syslog（procd 把 stdout/stderr 交给 logd）：
+
+```sh
+logread -e portal_login          # 全部守护日志
+logread -f -e portal_login       # 实时跟踪
+logread -e portal_login | tail -50
+```
+
+输出形如：
+
+```
+[2026-09-19 12:00:03] WARNING 检测到断网：redirect(302) -> http://10.10.16.101:8080/...
+[2026-09-19 12:00:05] INFO 已通过 手机号+认证码 换取新 satoken
+[2026-09-19 12:00:09] INFO 网络已恢复（离线 6.1 秒，尝试 1 次）
+```
+
+> ⚠️ `logread` 是**环形缓冲且重启即失**（缓冲大小见 `/etc/config/system` 的 `log_size`）。
+> 需要跨重启追溯的长期故障，靠下面的 `alerts.jsonl`。
+
+各文件位置与持久性：
+
+| 内容 | 路径 | 重启后 |
+|---|---|---|
+| 运行日志 | `logread`（logd 环形缓冲） | **丢失** |
+| 断网历史 | `/etc/portal_login/outages.jsonl` | 保留 |
+| 持久化告警 | `/etc/portal_login/alerts.jsonl` | 保留 |
+| 实时状态 | `/tmp/portal_login/state.json` | 丢失 |
+| detect 开关 | `/tmp/portal_login/state.json.control.json` | **丢失，复位为 `detect_enabled`** |
+
+服务与实时状态：
+
+```sh
+/etc/init.d/portal_login status                    # running 判定 + 状态 JSON
+ubus call service list '{"name":"portal_login"}'   # procd 视角：pid / 重启次数
+PYTHONPATH=. python3 -m portal_login status        # 同 state.json 内容
+```
+
+### 持久化告警 alerts.jsonl
+
+连续**认证**失败达 `alert_after`（默认 10）拍时落一条，每次离线事件只落一条：
+
+```sh
+cat /etc/portal_login/alerts.jsonl     # 不存在 = 从未发生过长期认证失败
+```
+
+> ⚠️ **网络全断不产生告警**：`probe` 阶段（无门户入口 / WAN 断）压根没发认证请求，
+> 不计入 `attempts`，那类故障看 `outages.jsonl` 的 `offline_start`。
+> 完整分工表见 PROTOCOL_NOTES 15.1 第 5 点。
 
 ## 架构
 
@@ -181,7 +248,7 @@ httpclient.py  http.client 长连接：按主机缓存、跟随 3xx、断线重�
 detector.py    三态探测 → ProbeResult(online/code/redirect/reason)
 auth.py        TokenManager：loginByPhoneAndUid 换发 + 内存/tmpfs 缓存(0600) + 401 作废重换
 portal.py      提取 eportal 基址 → oauthRedirect(401 重试) → GET 放行 → 204 复核
-recorder.py    JSONL 事件 + state.json + 运行时控制文件（原子写入）
+recorder.py    JSONL 事件 + state.json + 持久化告警 + 运行时控制文件（原子写入）
 scheduler.py   主循环：时间窗换档、当拍立即登录、指数退避、抖动、信号处理
 ```
 
@@ -240,7 +307,8 @@ reload 用 `procd_send_signal <服务名> '*' HUP` 发 SIGHUP 热重载。
 完整 init 脚本见仓库根目录 `openwrt_portal_login.init`。
 
 数据落盘约定：`/tmp`（tmpfs）放 state/token/控制文件，重启即弃；
-`/etc`（overlay）放 outages.jsonl，每次断网仅追加约 3 行，无 flash 磨损担忧。
+`/etc`（overlay）放 outages.jsonl 与 alerts.jsonl，每次断网仅追加约 3 行、
+每次长期故障仅追加 1 行，无 flash 磨损担忧。
 
 ## ⚠️ 安全注意
 
