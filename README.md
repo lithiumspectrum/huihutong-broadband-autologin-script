@@ -1,7 +1,9 @@
-# portal_login
+# huihutong-broadband-autologin-script
 
 慧湖通（独墅湖人才公寓）Web 门户认证的无人值守自动登录守护。
 纯 Python 3 标准库实现（3.8+，零第三方依赖），面向 OpenWrt 软路由常驻运行。
+
+仓库名 huihutong-broadband-autologin-script；Python 包 / 命令 / 服务名均为 `portal_login`，代码本体见 [portal_login/](./portal_login)。
 
 适用网络：`api.215123.cn` 慧湖通门户（锐捷 eportal/RG-SAM 后台，微信 SSO 认证，
 **非 802.1X**，mentohust/minieap 不适用）。
