@@ -65,7 +65,7 @@ class HttpClient:
 
     @staticmethod
     def _split(url):
-        """解析 URL，返回 (urlsplit 结果, 连接缓存键)。端口解析只此一处。"""
+        """解析 URL，返回 (urlsplit 结果, 主机键 (scheme, hostname, port))。"""
         parts = urlsplit(url)
         scheme = parts.scheme.lower()
         port = parts.port or (443 if scheme == "https" else 80)
@@ -78,10 +78,10 @@ class HttpClient:
         return http.client.HTTPConnection(host, port, timeout=timeout)
 
     def _get_conn(self, key, timeout):
+        """key 为主机键 + timeout：socket 超时在建连时固化，不同 timeout 不能复用同一条连接。"""
         conn = self._conns.get(key)
         if conn is None:
-            scheme, host, port = key
-            conn = self._make_conn(scheme, host, port, timeout)
+            conn = self._make_conn(key[0], key[1], key[2], timeout)
             self._conns[key] = conn
         return conn
 
@@ -95,6 +95,7 @@ class HttpClient:
 
     def _raw_request(self, method, url, body, headers, timeout):
         parts, key = self._split(url)
+        key = key + (timeout,)
         path = parts.path or "/"
         if parts.query:
             path += "?" + parts.query
@@ -116,7 +117,7 @@ class HttpClient:
         try:
             return self._raw_request(method, url, body, headers, timeout)
         except _CONN_ERRORS:
-            self._drop_conn(self._split(url)[1])
+            self._drop_conn(self._split(url)[1] + (timeout,))
             try:
                 return self._raw_request(method, url, body, headers, timeout)
             except _CONN_ERRORS as exc:

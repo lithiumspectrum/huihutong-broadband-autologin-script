@@ -45,7 +45,7 @@ scp tools/mock_portal.py root@192.168.1.1:/root/portal_login/tools/
 
 # 路由器上
 cd /root/portal_login
-PYTHONPATH=. python3 -m portal_login selftest      # 期望 17/17
+PYTHONPATH=. python3 -m portal_login selftest      # 期望 20/20
 PYTHONPATH=. python3 -m portal_login status        # 实时状态 JSON
 PYTHONPATH=. python3 -m portal_login once 2>&1 | tail -20   # 断网时验证实链路
 /etc/init.d/portal_login restart                   # 改代码后必须重启守护
@@ -197,7 +197,14 @@ assert unquote(redirect_uri_param) == redirect_param_value   # 必须成立
 > 现在的截取实现是 `final.split("redirect=", 1)[1]`，若平台将来在 `redirect` 之后
 > 再追加参数（如 `&foo=1`），`portal_url` 会被污染成 `...&foo=1` 并原样编码进去 → 500。
 > 又因为 eportal 参数之间用的是**裸 `&`**，无法用“截断到第一个 `&`”来修。
-> 平台改版时若报 500，**先检查 login.html 的 URL 参数顺序**。
+>
+> **为什么无法在客户端根治**：这个 URL 本身在追加参数后就**有歧义**了——谁也分不清
+> `&foo=1` 属于 eportal 还是外层 SSO；站点自己的 `broadband.js::getParam('redirect')`
+> 会同样把 `&foo=1` 卷进去，**浏览器登录也会一起 500**。所以这不是脚本的 bug，
+> 而是平台改版的表征。脚本能做到的是**不静默**：`portal.py` 在 oauthRedirect 失败时
+> 会把本次实际发出的 `redirect_uri` 整串打进日志，并在检出外层参数
+> （`isOAuth` / `client` / `redirect` 出现在 portal_url 里）时直接点名原因。
+> 平台改版后若报 500，**先看这条 warning，再检查 login.html 的 URL 参数顺序**。
 
 ### 步骤 3：手机号 + 认证码（uid）换 satoken + oauthRedirect 换一次性 code
 
@@ -319,7 +326,7 @@ GET <上一步 data 里的完整 eportal URL>
 ### 4.4 已排除的错误方向
 
 - `/web-app/auth/getOpenId`（拿 ac 侧 token 反查 openId）→ 返回 500 `操作失败:null`。
-  **网站 JWT 推不出 openId**，别在这条路上浪费时间（早期 extract_openid.ps1 已因此删除）。
+  **网站 JWT 推不出 openId**，别在这条路上浪费时间。
 - 二维码落地页 URL 本身不含可用凭证，见第 6 节。
 - 网站 JWT 不能通过刷新接口续命——要永久自动，必须用 4.1 的永久凭证重新换发。
 - **宽带账号绑定（selectBindBroadband / addBindBroadband）与 oauthRedirect 500 无关**：
@@ -445,11 +452,12 @@ GET <上一步 data 里的完整 eportal URL>
 
 - 电脑连未认证宿舍网 → F12 Network 勾选 Preserve log → 访问任意 http 站点触发跳转 →
   微信扫码 → 观察完整 302 链与 `oauthRedirect` XHR。
-- 或用 Fiddler/浏览器导出 HAR，用 `parse_har.ps1` 提取关键请求。
-- `capture_sso.ps1`：一键保存探测三态、重定向链、SSO 页面与 JS（在电脑端连宿舍网跑）。
-- `capture.ps1`：更早的网络环境快照（ipconfig / 路由 / ARP / DNS / 门户响应），用于排查二三层问题。
-- PowerShell 注意：用 `curl.exe`（不是 `curl` 别名 `Invoke-WebRequest`）；
-  含中文的 `.ps1` 用 UTF-8 BOM 保存；PSSecurityException 是执行策略噪声，不影响 curl.exe。
+- 需要离线比对时：Fiddler 或 F12 右键 **Save all as HAR**，用一段 Python
+  （`json.load` + 遍历 `log.entries`）筛出关注请求即可；仓库**不再附带抓包脚本**
+  （旧的 `scripts/*.ps1` 围绕 openId 编写，已删除）。
+  分析时注意：`login.html` 的 `redirect` 值内部用**未编码的裸 `&`**（见步骤 2.5），
+  所以必须**取到串尾**，用常规 query 解析器会把 eportal 参数截断。
+- 排查二三层问题（ipconfig / 路由 / ARP / DNS / 门户响应）用系统自带命令即可。
 
 ### 9.3 路由器侧被动验证 802.1X 是否存在
 
@@ -462,7 +470,7 @@ GET <上一步 data 里的完整 eportal URL>
 1. **网络层**：路由器 WAN 是否拿到宿舍网段 IP、能否到 `10.10.16.101:8080`。
 2. **探测三态**：手动 `curl -v http://connect.rom.miui.com/generate_204`，
    确认还是 204/302/200 哪种；探测域名若被换，改 `PORTAL_CHECK_URL`。
-3. **重定向链**：`curl -sIL` 或 `capture_sso.ps1` 跟链，确认 eportal 基址形态
+3. **重定向链**：`curl -sIL` 跟链，确认 eportal 基址形态
    （直连 vs SSO `redirect=`）与参数名是否变化。
 4. **凭证换发**：`curl -X POST .../ac/auth/loginByPhoneAndUid -d '{"phone":...,"uid":...,"captchaKey":""}'`
    是否仍 200；若 404/签名错误，需重新抓小程序看接口是否改路径/加签。
@@ -533,8 +541,9 @@ procd 以 `python3 -m portal_login daemon` 启动并 respawn；配置为 INI（�
 
 **2026-09-18 换凭证后复测（当前状态：已上线运行）**
 
-- `selftest` **17/17**：①已在线无动作、②302→SSO→loginByPhoneAndUid→oauth→eportal 单拍恢复、
-  ③401 自动重换 token 二次成功（mint×2/oauth×2）、④detect off 照常认证但不写记录。
+- `selftest` **20/20**：①已在线无动作、②302→SSO→loginByPhoneAndUid→oauth→eportal 单拍恢复、
+  ③401 自动重换 token 二次成功（mint×2/oauth×2）、④detect off 照常认证但不写记录、
+  ⑤改凭证后磁盘 token 缓存自动失效重换（防静默沿用旧账号会话）。
 - 本机（Windows）经 v5 自身 httpclient（含 TLS 校验）调 `loginByPhoneAndUid` 成功取 token；
   缓存命中返回同一 token，invalidate 后重取得到不同 token（rnStr 随机性符合预期）。
 - **路由器现场端到端成功**（`PYTHONPATH=. python3 -m portal_login once`）：
@@ -588,7 +597,7 @@ procd 以 `python3 -m portal_login daemon` 启动并 respawn；配置为 INI（�
 | 运营商 | chinaMobile（页面第 3 按钮） |
 | 强制下线 | 每日约 12:00，手机号+认证码 模式 30s 内自动恢复 |
 | client_id | `6d6bc6f3b5f04107a5fc1c62e39dd5f4`（改版前固定） |
-| 守护实现 | Python v5（纯标准库，2026-09-18 换凭证）：selftest 17/17、路由器现场端到端通过；shell v4 已删除 |
+| 守护实现 | Python v5（纯标准库，2026-09-18 换凭证）：selftest 20/20、路由器现场端到端通过；shell v4 已删除 |
 
 ## 14. 证据目录导览
 
@@ -607,12 +616,11 @@ procd 以 `python3 -m portal_login daemon` 启动并 respawn；配置为 INI（�
   ④ 全程 **零** 次 `selectBindBroadband` / `addBindBroadband` / `bind-broadband-form`。
 
 > ⚠️ 早期还有两组目录（`capture_20260915_*`、`sso_capture_20260915_152903`）记录了
-> openId 时代的诊断过程，但**已不在仓库中**（只被 `scripts/capture*.ps1` 的默认输出路径
-> 提及）。需要那批前端源码时，改从 `capture1/10.10.16.101.har` 里抠
+> openId 时代的诊断过程，但**它们与抓包脚本一同已不在仓库中**（`scripts/` 已删除）。
+> 需要那批前端源码时，改从 `capture1/10.10.16.101.har` 里抠
 > `broadband.js` / `common.js` / `login.js` 的正文——那是目前唯一仍在库内的第一手来源。
 
-- 各目录**只有 HAR 文件，没有 `capture_log.txt`**（早期脚本的产物，未一并归档）；
-  抓取顺序与命令看 `scripts/capture*.ps1` 自身的日志输出逻辑。
+- 各目录**只有 HAR 文件，没有 `capture_log.txt`**（那是已删除的抓包脚本的产物）。
 
 ## 15. 安全与注意事项
 
@@ -625,17 +633,13 @@ procd 以 `python3 -m portal_login daemon` 启动并 respawn；配置为 INI（�
   开代理可能导致 eportal 内网地址不可达或源 IP 不匹配。
 - 自动认证只解决“WAN 口放行”，多设备共享的隐蔽性由上级 README 的 UA2F + rkp-ipid 负责，二者缺一不可。
 
-### 15.1 运维注意（改配置时的三个坑）
+### 15.1 运维注意（三个要点）
 
-1. **改了 `phone` / `user_uid` 后，必须手动删 token 缓存**：
-
-   ```sh
-   rm -f /tmp/portal_login/token.json && /etc/init.d/portal_login restart
-   ```
-
-   原因：token 缓存在 **tmpfs，`restart` 不会清空**；`TokenManager.get_token()` 会先读磁盘缓存，
-   于是继续用**旧账号**换来的会话，直到某次 401 才换新。`reload`（SIGHUP）同理，更不会清缓存。
-   只改 `service_name` / 时间窗等无凭证项则无此问题。
+1. **改 `phone` / `user_uid` 无需手动清 token 缓存**：缓存文件里存了凭证指纹
+   （`sha256(phone\0uid)` 前 16 位，不存明文），与当前配置不符时
+   `TokenManager._load_disk()` 会告警并丢弃、重新换发。`restart` / `reload` 后直接生效。
+   只改 `service_name` / 时间窗等无凭证项则完全无关。
+   （历史：早期版本无指纹，缓存落在 tmpfs 且 `restart` 不清空，会**静默沿用旧账号会话**。）
 2. **认证码填错时的重试频率**：换 token 失败不会写缓存，于是**每一拍都会重试一次登录接口**
    （时间窗内 5s 一次，常态 30s 一次）。这是设计使然，但若日志持续出现
    `loginByPhoneAndUid 未返回 token`，应**先停守护再排查凭证**，避免高频试探登录接口。
@@ -649,9 +653,9 @@ procd 以 `python3 -m portal_login daemon` 启动并 respawn；配置为 INI（�
 
 | 脆弱点 | 位置 | 触发条件 | 现象 |
 |---|---|---|---|
-| `redirect` 必须是最后一个参数 | `portal.py::extract_portal_url` | 平台在 `redirect` 后追加参数 | oauthRedirect 500 |
+| `redirect` 必须是最后一个参数 | `portal.py::extract_portal_url` | 平台在 `redirect` 后追加参数 | oauthRedirect 500；**日志会打出完整 redirect_uri 并点名外层参数**（客户端无法根治，站点自身也会失效） |
 | 编码层级假设（不 decode） | `portal.py::extract_portal_url` + `_oauth_once` | 平台改成两次编码的 `redirect` 值 | oauthRedirect 500 |
-| 现场 B 判定依赖字面 `redirect=` | 同上 | 参数名改成 `redirectUri=` 等 | 日志报 `无法提取 eportal URL` |
+| 现场 B 判定依赖字面 `redirect=` | 同上 | 参数名改成 `redirectUri=` 等 | 日志报 `无法提取 eportal URL`（含原文） |
 | 换 token 必须同模块 | `auth.py::_mint` | 平台调整 `/ac/` 与 `/web-app/` 会话表关系 | oauthRedirect 500 |
 | 探测三态形态 | `detector.py` | 网关改成 200 无 JS 跳转的页面 | 日志报 `probe_unknown(200)` |
 

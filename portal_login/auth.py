@@ -9,6 +9,7 @@ satoken 不是用户配置项（扫码 JWT 路径已移除）：它只是
   2. 磁盘缓存（仅为进程重启后省一次换发）：目录 700 / 文件 600
 """
 
+import hashlib
 import json
 import os
 import tempfile
@@ -28,6 +29,14 @@ class TokenManager:
         self._token = None
 
     # ------------------------------------------------------------------ 内部
+    def _cred_fingerprint(self):
+        """当前凭证的指纹，用于判断磁盘缓存是否还属于同一账号。
+
+        只存哈希不存明文：缓存文件虽在 tmpfs 且 0600，也没必要多一份凭证副本。
+        """
+        raw = "%s\x00%s" % (self._cfg.PHONE, self._cfg.USER_UID)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
     def _mint(self):
         url = "%s/ac/auth/loginByPhoneAndUid" % self._cfg.API_BASE.rstrip("/")
         # 与前端同构：三个字段全字符串；captchaKey 传空串即可（实测无验证码）
@@ -46,15 +55,27 @@ class TokenManager:
         return token
 
     def _load_disk(self):
+        """读磁盘缓存；凭证指纹不匹配（改过 phone/user_uid）则丢弃并删文件。"""
         try:
             with open(self._cfg.TOKEN_CACHE, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
-            token = data.get("token")
-            if isinstance(token, str) and token:
-                return token
         except (OSError, ValueError):
+            return None
+        token = data.get("token")
+        if not isinstance(token, str) or not token:
+            return None
+        if data.get("cred") != self._cred_fingerprint():
+            # 不静默沿用旧账号的会话——这正是「改了凭证却没删缓存」的坑
+            self._log.warning("token 缓存与当前 phone/user_uid 不符，已丢弃")
+            self._remove_disk()
+            return None
+        return token
+
+    def _remove_disk(self):
+        try:
+            os.remove(self._cfg.TOKEN_CACHE)
+        except OSError:
             pass
-        return None
 
     def _save_disk(self, token):
         path = self._cfg.TOKEN_CACHE
@@ -62,7 +83,9 @@ class TokenManager:
             directory = os.path.dirname(path)
             if directory:
                 os.makedirs(directory, mode=0o700, exist_ok=True)
-            payload = json.dumps({"token": token}, ensure_ascii=False)
+            payload = json.dumps({"token": token,
+                                  "cred": self._cred_fingerprint()},
+                                 ensure_ascii=False)
             # 同目录临时文件 + 原子替换，避免半写入
             fd, tmp = tempfile.mkstemp(prefix=".token.", dir=directory or ".")
             try:
@@ -99,10 +122,7 @@ class TokenManager:
     def invalidate(self):
         """丢弃内存与磁盘缓存（401 后调用）。"""
         self._token = None
-        try:
-            os.remove(self._cfg.TOKEN_CACHE)
-        except OSError:
-            pass
+        self._remove_disk()
 
 
 def _parse_token(resp):

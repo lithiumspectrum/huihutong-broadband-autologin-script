@@ -94,10 +94,8 @@ python3 -m portal_login <命令>
 > token 是 JWT，payload 里的 `loginId`（`NONE:<19位数字>`）是**服务端按 uid 反查出的
 > 平台内部用户 ID**，与你要配置的 `uid`（认证码）不是同一个值，别混。
 
-> 🛠 仓库 `scripts/` 下有 PowerShell 抓包辅助脚本（`capture.ps1` / `capture_sso.ps1` / `parse_har.ps1`）。
-> ⚠️ 三个脚本都是 **openId 时代产物**（`capture.ps1 -OpenId`、`parse_har.ps1` 专门搜 `openId=`），
-> 与现行「手机号 + 认证码」路线不符，**不要照它给的下一步操作做**；其价值仅在于抓包/解析 HAR 的框架，
-> 改版重逆时需把关注字段改成 `loginByPhoneAndUid` 的请求体 `phone` / `uid`。
+> 🛠 抓包用 Fiddler Classic 或浏览器 F12（步骤见 [PROTOCOL_NOTES.md](PROTOCOL_NOTES.md) 第 9 节）；
+> 仓库不附带抓包脚本——旧的 `scripts/*.ps1` 是 openId 时代产物，已删除。
 
 > 🔒 手机号 + 认证码 等同上网密码：配置文件 `chmod 600`，勿提交 git、勿截图外发。
 
@@ -139,13 +137,9 @@ watch_interval = 5              ; 时间窗内探测间隔（秒）
 | `outage_log` | daemon | `/etc/portal_login/outages.jsonl` | 断网历史（持久化） |
 | `token_cache` | daemon | `/tmp/portal_login/token.json` | token 缓存（tmpfs，0600） |
 
-> ⚠️ **改过 `phone` / `user_uid` 后必须清 token 缓存再重启**，否则会继续用旧账号的会话：
->
-> ```sh
-> rm -f /tmp/portal_login/token.json && /etc/init.d/portal_login restart
-> ```
->
-> 只改 `service_name`、时间窗等无凭证项时无此问题。原因见
+> ✅ **改过 `phone` / `user_uid` 后无需手动清缓存**：token 缓存文件里记了凭证指纹，
+> 与当前配置不符时会自动丢弃并重新换发（自测场景⑤覆盖）。改完 `restart` 或 `reload` 即可。
+> 只改 `service_name`、时间窗等无凭证项时同样无影响。细节见
 > [PROTOCOL_NOTES.md](PROTOCOL_NOTES.md) 第 15.1 节。
 
 ## 命令
@@ -155,7 +149,7 @@ python3 -m portal_login daemon      # 守护主循环（前台运行，适合 sy
 python3 -m portal_login once        # 只跑一拍：在线退 0，离线立即登录，成功 0/失败 1
 python3 -m portal_login status      # 实时状态 JSON
 python3 -m portal_login detect off  # 关闭断网记录（照常认证，适合割接演练）
-python3 -m portal_login selftest    # 本机 mock 全链路自测，17 项断言
+python3 -m portal_login selftest    # 本机 mock 全链路自测，20 项断言
 ```
 
 > `selftest` 依赖仓库中的 `tools/mock_portal.py`（模拟整条门户链路），

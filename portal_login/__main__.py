@@ -204,6 +204,30 @@ def cmd_selftest(args):
             _restore_env(saved_env)
             shutil.rmtree(tmp, ignore_errors=True)
 
+        # 场景 5：改凭证后磁盘 token 缓存必须失效（防静默沿用旧账号会话）
+        tmp = tempfile.mkdtemp(prefix="pl_test_cred_")
+        base, state, server = start_mock("online")
+        try:
+            from .auth import TokenManager
+            cfg, saved_env = _selftest_config(tmp, base)
+            d = Daemon(cfg)
+            d._log.setLevel(logging.ERROR)
+            TokenManager(cfg, d.client, d._log).get_token()   # 旧凭证写一份缓存
+            check("⑤改凭证：缓存已落盘", os.path.isfile(cfg.TOKEN_CACHE))
+
+            os.environ["USER_UID"] = "mock-uid-changed"        # 换认证码
+            cfg.reload()
+            TokenManager(cfg, d.client, d._log).get_token()
+            check("⑤改凭证：旧缓存被丢弃并重新换发", state.mint_count == 2)
+            with open(cfg.TOKEN_CACHE, encoding="utf-8") as fh:
+                check("⑤改凭证：缓存已按新凭证重写",
+                      json.load(fh).get("token") == "mock-token-2")
+        finally:
+            os.environ.pop("USER_UID", None)
+            server.shutdown()
+            _restore_env(saved_env)
+            shutil.rmtree(tmp, ignore_errors=True)
+
     finally:
         _restore_env(saved_env)
 

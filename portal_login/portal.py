@@ -24,6 +24,22 @@ class LoginResult:
         self.http_code = http_code
 
 
+# 这些键只可能出现在外层 SSO URL（login.html?isOAuth=..&client=..&redirect=..）上。
+# 若它们出现在提取出的 portal_url 里，说明 redirect 值后面还跟着外层参数
+# （PROTOCOL_NOTES 步骤 2.5 的隐含假设被打破），用于失败时一击定位。
+_OUTER_SSO_PARAMS = ("isOAuth", "client", "redirect")
+
+
+def _outer_params_in(portal_url):
+    """返回 portal_url 中疑似来自外层 SSO URL 的参数名（正常时为空列表）。"""
+    found = []
+    for segment in portal_url.split("&"):
+        name = segment.split("=", 1)[0].split("%3F")[-1]
+        if name in _OUTER_SSO_PARAMS:
+            found.append(name)
+    return found
+
+
 def extract_portal_url(client, entry, timeout=15):
     """跟随完整跳转链提取 eportal 基址。"""
     final = entry
@@ -83,9 +99,11 @@ def perform_login(cfg, client, tokens, logger, probe_result=None):
     logger.info("检测到未登录，门户重定向: %s", entry)
 
     portal_url = extract_portal_url(client, entry, cfg.API_TIMEOUT)
-    if not portal_url or "/eportal/" not in portal_url:
+    if not portal_url or not portal_url.startswith("http") or "/eportal/" not in portal_url:
         return LoginResult(False, "portal_extract",
-                           "无法提取 eportal URL: %s" % portal_url)
+                           "无法提取 eportal URL（门户入口: %s，提取结果: %s）"
+                           % (entry, portal_url))
+    logger.info("提取到 eportal 基址: %s", portal_url)
 
     try:
         token = tokens.get_token()
@@ -113,6 +131,15 @@ def perform_login(cfg, client, tokens, logger, probe_result=None):
             return LoginResult(False, "oauth", "重试网络失败: %s" % exc, 401)
 
     if not isinstance(data, dict) or data.get("code") not in (200, "200"):
+        # 不静默：把本次实际发出的 redirect_uri 打进日志，并在检出「外层参数混入」时
+        # 直接点名原因——这正是 platform 让 redirect 不再是最后一个参数时的表征
+        suspects = _outer_params_in(portal_url)
+        if suspects:
+            logger.warning(
+                "oauthRedirect 失败，且 redirect_uri 混入了外层 SSO 参数 %s："
+                "login.html 的 redirect 已不是最后一个参数（PROTOCOL_NOTES 步骤 2.5）",
+                suspects)
+        logger.warning("oauthRedirect 失败，本次 redirect_uri=%s", portal_url)
         return LoginResult(False, "oauth",
                            "oauthRedirect 异常: %s" % (raw or "")[:300], status)
 
