@@ -10,7 +10,7 @@
 
 ## 特性
 
-- **无人值守**：以手机号 + 用户 UID 为唯一永久凭证，自动换发 satoken，
+- **无人值守**：以手机号 + 登录认证码为唯一永久凭证，自动换发 satoken，
   401 自动作废重换并重试
 - **每日强制下线自愈**：覆盖每日约 12:00 的 RADIUS 踢下线，最坏数秒内自动恢复
 - **智能频率**：常态 30s 探测，易断网时间窗内（默认 11:55-12:10）自动加速到 5s；
@@ -28,13 +28,14 @@
 ```
 ① GET http://connect.rom.miui.com/generate_204   三态探测（204 在线 / 302 或 200-JS跳转 未认证 / 网络异常离线）
 ② 跟随重定向链，提取 eportal login_sso.jsp 基址（作为 redirect_uri）
+   （实测链路会经 /ac/oauth2/authorize → sso/login.html?redirect=… 中转）
 ③ POST api.215123.cn/ac/auth/loginByPhoneAndUid  {phone, uid, captchaKey:""}  换发 satoken(JWT)
 ④ GET api.215123.cn/ac/auth/oauthRedirect（satoken 头）              换一次性 code
 ⑤ GET <带 code 的 eportal URL>                                       放行源 IP
 ⑥ 复查 generate_204 = 204                                            确认上线
 ```
 
-`oauthRedirect` 返回 401 时，自动用手机号 + UID 重新换发 token 并重试一次。
+`oauthRedirect` 返回 401 时，自动用手机号 + 认证码重新换发 token 并重试一次。
 凭证的唯一作用是让 API 签发一次性 code，证明"该用户订购了对应运营商套餐"。
 
 > ⚠️ 换 token **必须走 `/ac/auth/loginByPhoneAndUid`**。旧的
@@ -44,6 +45,8 @@
 
 > 📄 接口原理、抓包事实、踩坑记录（给未来维护者/AI 的完整逆向档案）：
 > **[PROTOCOL_NOTES.md](PROTOCOL_NOTES.md)**
+> —— 含「30 秒速览」、`redirect_uri` 编码层级对照、已知脆弱点表、
+> 以及一个未决问题（运营商绑定页为何偶尔弹出，第 4.5 节）。
 
 ## 依赖与安装
 
@@ -66,12 +69,15 @@ export PYTHONPATH=/root/portal_login   # 假设包位于 /root/portal_login/port
 python3 -m portal_login <命令>
 ```
 
-## 获取手机号与 UID（唯一需要手动获取的凭证）
+## 获取手机号与认证码（唯一需要手动获取的凭证）
 
 两者都是永久值，获取一次长期有效：
 
 1. PC 安装 Fiddler，开启 HTTPS 解密并信任根证书
-2. 微信 PC 版打开"慧湖通"小程序，进入"我的"页（会触发登录接口）
+2. 触发一次登录，两种途径都行（推荐第一种，不用装微信）：
+   - **浏览器**：连上未认证的宿舍网 → 访问任意 http 站点 → 门户跳到慧湖通登录页 →
+     输入手机号与认证码登录；
+   - **微信 PC 版**打开"慧湖通"小程序，进入"我的"页。
 3. 在抓包列表找 `POST api.215123.cn/ac/auth/loginByPhoneAndUid`，从请求体里复制
    `phone` 与 `uid`——**`uid` 就是你登录时填的那串「认证码」**（API 字段名叫 uid，
    配置项因此叫 `user_uid`）；`captchaKey` 实测可传空串
@@ -88,9 +94,12 @@ python3 -m portal_login <命令>
 > token 是 JWT，payload 里的 `loginId`（`NONE:<19位数字>`）是**服务端按 uid 反查出的
 > 平台内部用户 ID**，与你要配置的 `uid`（认证码）不是同一个值，别混。
 
-> 🛠 仓库 `scripts/` 下有 PowerShell 抓包辅助脚本（`capture.ps1` / `capture_sso.ps1` / `parse_har.ps1`），平台改版重逆时可参考。
+> 🛠 仓库 `scripts/` 下有 PowerShell 抓包辅助脚本（`capture.ps1` / `capture_sso.ps1` / `parse_har.ps1`）。
+> ⚠️ 三个脚本都是 **openId 时代产物**（`capture.ps1 -OpenId`、`parse_har.ps1` 专门搜 `openId=`），
+> 与现行「手机号 + 认证码」路线不符，**不要照它给的下一步操作做**；其价值仅在于抓包/解析 HAR 的框架，
+> 改版重逆时需把关注字段改成 `loginByPhoneAndUid` 的请求体 `phone` / `uid`。
 
-> 🔒 手机号 + UID 等同上网密码：配置文件 `chmod 600`，勿提交 git、勿截图外发。
+> 🔒 手机号 + 认证码 等同上网密码：配置文件 `chmod 600`，勿提交 git、勿截图外发。
 
 ## 配置
 
@@ -129,6 +138,15 @@ watch_interval = 5              ; 时间窗内探测间隔（秒）
 | `state_file` | daemon | `/tmp/portal_login/state.json` | 实时状态（tmpfs） |
 | `outage_log` | daemon | `/etc/portal_login/outages.jsonl` | 断网历史（持久化） |
 | `token_cache` | daemon | `/tmp/portal_login/token.json` | token 缓存（tmpfs，0600） |
+
+> ⚠️ **改过 `phone` / `user_uid` 后必须清 token 缓存再重启**，否则会继续用旧账号的会话：
+>
+> ```sh
+> rm -f /tmp/portal_login/token.json && /etc/init.d/portal_login restart
+> ```
+>
+> 只改 `service_name`、时间窗等无凭证项时无此问题。原因见
+> [PROTOCOL_NOTES.md](PROTOCOL_NOTES.md) 第 15.1 节。
 
 ## 命令
 

@@ -129,7 +129,7 @@ class Config:
 
     def describe_credential(self):
         if self._values["PHONE"] and self._values["USER_UID"]:
-            return "手机号+UID(自动换新,无人值守)"
+            return "手机号+认证码(自动换新,无人值守)"
         return "未配置"
 
 

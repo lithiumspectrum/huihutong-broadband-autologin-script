@@ -3,9 +3,10 @@
 频率策略：
   - 当前时间落在 WATCH_WINDOWS（默认 11:55-12:10）→ WATCH_INTERVAL（默认 5s）
   - 其余时间 → INTERVAL（默认 30s）
-  - 离线时重试间隔 = min(RETRY_BASE * 2**attempts, 当前档间隔)，叠加 ±JITTER
+  - 离线时重试间隔 = min(RETRY_BASE * 2**(failures-1), RETRY_CAP, 当前档间隔)，叠加 ±JITTER
   - 检测到离线的当拍立即发起认证，不等到下一拍
-  - 抖动避免多设备/整点齐刷；RETRY_BASE 为请求下限，避免风暴
+  - 抖动避免多设备/整点齐刷；JITTER 后仍保底 1s，避免风暴
+  - 间隔是「上一拍结束后再等」：tick 全程阻塞，认证不会被下一拍打断或重复
 
 信号：
   SIGTERM/SIGINT 优雅退出（procd stop）

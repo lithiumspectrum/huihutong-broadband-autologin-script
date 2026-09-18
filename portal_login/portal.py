@@ -3,7 +3,7 @@
   1. 跟随门户入口重定向链，提取 eportal login_sso.jsp 基址（redirect_uri）
      - 现场 A：直接 302 到 http://<eportal>/eportal/login_sso.jsp?...
      - 现场 B：302 到 SSO login.html?...&redirect=<一次编码的 eportal 原文>
-  2. 手机号 + UID 换 satoken（auth.TokenManager）
+  2. 手机号 + 认证码（uid）换 satoken（auth.TokenManager）
   3. GET /ac/auth/oauthRedirect（satoken 头）→ 返回带一次性 code 的最终 eportal URL
   4. GET 该 URL（坚持 GET，不用 HEAD）→ 交换机放行 WAN 口源 IP
 """
@@ -67,7 +67,7 @@ def _oauth_once(client, cfg, token, portal_url, timeout):
 
 
 def perform_login(cfg, client, tokens, logger, probe_result=None):
-    """执行一次完整上线；401 时用手机号+UID 重新换发 token 并重试一次。
+    """执行一次完整上线；401 时用手机号+认证码重新换发 token 并重试一次。
 
     probe_result：调用方（守护 tick）本拍已完成的探测结果，传入则复用，
     避免一拍内对同一探测 URL 发两次请求。
@@ -98,9 +98,9 @@ def perform_login(cfg, client, tokens, logger, probe_result=None):
     except HttpClientError as exc:
         return LoginResult(False, "oauth", "网络失败: %s" % exc)
 
-    # 401：丢弃 token，用手机号+UID 重换后重试一次（覆盖每日强制下线场景）
+    # 401：丢弃 token，用手机号+认证码重换后重试一次（覆盖每日强制下线场景）
     if status == 401 or (isinstance(data, dict) and data.get("code") in (401, "401")):
-        logger.warning("satoken 401，使用手机号+UID 重新换发后重试一次")
+        logger.warning("satoken 401，使用手机号+认证码重新换发后重试一次")
         tokens.invalidate()
         try:
             token = tokens.get_token(force_refresh=True)

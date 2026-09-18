@@ -1,4 +1,4 @@
-"""手机号 + UID → satoken 的换发与安全缓存。
+"""手机号 + 认证码（API 字段名 uid）→ satoken 的换发与安全缓存。
 
 satoken 不是用户配置项（扫码 JWT 路径已移除）：它只是
 `POST /ac/auth/loginByPhoneAndUid` 签发的临时会话凭证，由守护进程
@@ -93,7 +93,7 @@ class TokenManager:
         token = self._mint()
         self._token = token
         self._save_disk(token)
-        self._log.info("已通过 手机号+UID 换取新 satoken")
+        self._log.info("已通过 手机号+认证码 换取新 satoken")
         return token
 
     def invalidate(self):

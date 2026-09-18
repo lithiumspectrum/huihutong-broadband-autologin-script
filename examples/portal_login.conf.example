@@ -8,7 +8,7 @@ phone =
 
 # 必填：登录认证码（loginByPhoneAndUid 请求体里的 uid，就是登录时填的那串数字；
 # 注意不是 token 里的 19 位 loginId）
-# 获取方法见 README「获取手机号与 UID」小节
+# 获取方法见 README「获取手机号与认证码」小节
 user_uid =
 
 # 运营商：chinaMobile / chinaTelecom / chinaUnicom / local

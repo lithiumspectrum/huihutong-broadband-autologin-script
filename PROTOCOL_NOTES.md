@@ -8,6 +8,53 @@
 >
 > **实现版本**：当前守护为 **Python v5**（`portal_login/` 包，纯标准库）；
 > shell v4 已删除。v5 的架构、基准与与 v4 的差异见第 11 节。
+>
+> **状态（2026-09-18 深夜）**：**已上线运行**。路由器现场端到端实测通过
+> （`once` 单拍内 11.9 秒完成 offline→online，见第 7 节）。凭证体系已从
+> openId 切换到「手机号 + 认证码」，抓包证据 `captures/capture5/fiddler.har`。
+> 尚存一个**未决问题**（宽带账号绑定页的触发条件，见第 4.5 节）。
+
+---
+
+## 0. 30 秒速览（下次接手先读这里）
+
+**这是什么**：慧湖通（独墅湖人才公寓）Web 门户认证的无人值守守护，
+纯 Python 3 标准库，跑在 OpenWrt 上，解决每日约 12:00 RADIUS 强踢后的自动重连。
+
+**一句话原理**：用「手机号 + 认证码」从 `/ac/auth/loginByPhoneAndUid` 换 satoken，
+再用 satoken 换一次性 code，最后 GET 一个 eportal 内网 URL 让网关**把路由器 WAN 口 IP 加白**。
+全程不发密码、不涉及 802.1X。
+
+**最小事实集**（记不住的只记这 6 条）：
+
+| # | 事实 |
+|---|---|
+| 1 | 换 token 只能走 `POST /ac/auth/loginByPhoneAndUid`；`/web-app/` 的 certificateLogin 签发的 token 一律被 oauthRedirect 拒（第 3 节根因） |
+| 2 | 配置里 `user_uid` = 用户登录时填的**认证码**，不是 JWT 里的 19 位 `loginId` |
+| 3 | 判在线**只用** `generate_204`；**绝不** GET `/ac/sso/logout` 或 `/ac/auth/logout`（GET 即注销 + 踢整机网，第 8 节） |
+| 4 | `redirect_uri` 必须 `quote(url, safe="")` 编码一次；portal_url 里的 `?` 已由上游编码成 `%3F`，不能再 decode |
+| 5 | 现场形态两类：入口可能直接给 `login_sso.jsp`（现场 A），也可能经 `sso/login.html?redirect=` 中转（现场 B，**更常见**） |
+| 6 | 未决：宽带绑定页出现的触发条件不明（第 4.5 节），**但它与 oauthRedirect 500 无关，守护不依赖它** |
+
+**部署与验证命令**（路由器 `ssh root@192.168.1.1`）：
+
+```sh
+# 上传（电脑上，仓库根目录）
+scp portal_login/*.py root@192.168.1.1:/root/portal_login/portal_login/
+scp tools/mock_portal.py root@192.168.1.1:/root/portal_login/tools/
+
+# 路由器上
+cd /root/portal_login
+PYTHONPATH=. python3 -m portal_login selftest      # 期望 17/17
+PYTHONPATH=. python3 -m portal_login status        # 实时状态 JSON
+PYTHONPATH=. python3 -m portal_login once 2>&1 | tail -20   # 断网时验证实链路
+/etc/init.d/portal_login restart                   # 改代码后必须重启守护
+```
+
+**配置文件** `/etc/portal_login.conf`（0600）：`[auth]` 段填 `phone` / `user_uid` / `service_name`。
+**注意键名不能叫 `UID`**——shell 里 `UID` 是只读内置变量，会污染环境变量覆盖逻辑。
+
+**排查顺序**（详见第 10 节）：网络层 → 探测三态 → 重定向链 → 换 token → oauthRedirect → 最后一跳。
 
 ---
 
@@ -38,8 +85,8 @@
   RG-SAM 是多接入方式平台（802.1X / Web / PPPoE / IPoE / VPN），“看到 RG-SAM”不代表开了 802.1X。
 - **本站实际接入方式 = Web 门户认证（HTTP 重定向型）**，并在锐捷 eportal 之上套了一层
   慧湖通自研的**微信 SSO**（`broadband.215123.cn/sso/`）。用户没有独立拨号用户名/密码，
-  运营商通过 `serviceName` 选择；自动化的身份载体是**手机号 + 用户 UID**（见第 4 节），
-  微信扫码仅用于人工登录。
+  运营商通过 `serviceName` 选择；自动化的身份载体是**手机号 + 登录认证码**
+  （API 字段名 `uid`，见第 4 节），微信扫码仅用于人工登录。
 - **mentohust / minieap 不适用**：它们是 802.1X（EAPOL, ethertype `0x888E`）supplicant，
   模拟锐捷 SU 客户端 V2/V3 算法，与 HTTP 门户完全是两条协议栈；且 mentohust 2011 年起停更、
   minieap 主要面向新版 802.1X。被动验证方法（只抓不发，零风险）：
@@ -103,7 +150,56 @@ GET http://connect.rom.miui.com/generate_204
 
 脚本里对应 `extract_portal_url()`：跟随重定向链取 `resp.url`，按 `redirect=` 截取。
 
-### 步骤 3：手机号 + UID 换 satoken + oauthRedirect 换一次性 code
+> **浏览器实测完整跳转链**（`captures/capture5/fiddler.har`，2026-09-18，两次上线完全一致）：
+>
+> ```
+> [66]  GET http://10.10.16.101:8080/eportal/index.jsp?<portal 参数>
+>         → 302 https://api.215123.cn/ac/oauth2/authorize?response_type=code
+>                 &client_id=6d6bc6f3b5f04107a5fc1c62e39dd5f4
+>                 &redirect_uri=http%3A%2F%2F10.10.16.101%3A8080%2Feportal%2Flogin_sso.jsp%3F...
+> [76]  GET https://broadband.215123.cn/sso/login.html?isOAuth=true&client=<client_id>
+>                 &redirect=http://10.10.16.101:8080/eportal/login_sso.jsp%3Fwlanuserip=...&wlanacname=...
+>         → 200 HTML（登录页）
+> [97]  POST /ac/auth/loginByPhoneAndUid              ← 用户登录
+> [103] GET  https://broadband.215123.cn/sso/broadband.html?client=...&redirect=<同上>   ← 选运营商页
+> [110] GET  /ac/auth/oauthRedirect?...&redirect_uri=<把上面 redirect 值再编码一次>
+> [112] GET  http://10.10.16.101:8080/eportal/login_sso.jsp?<原参数>&code=...&serviceName=chinaMobile
+>                 &apartmentId=...&roomId=...                    ← 放行
+>         → 302 http://10.10.16.101:8080/eportal/./success.jsp?userIndex=...&keepaliveInterval=0
+> [113] GET  /eportal/success.jsp?...                            ← 登录成功页（GBK）
+> ```
+>
+> 注意中间还有一跳 `/ac/oauth2/authorize`（SSO 的 OAuth 授权端点），它把 eportal 基址
+> **编码一次**后作为 `redirect_uri` 传给 SSO，SSO 再跳 `login.html`。
+> **`extract_portal_url` 只需最终 `login.html` 上那个 `redirect=` 值**，中间这跳可以忽略。
+
+### 步骤 2.5：`redirect_uri` 的编码层级（改版最易踩的坑，务必对齐）
+
+三个形态必须分清，混一层就是 500：
+
+| # | 形态 | 样例（片段） | 出处 |
+|---|---|---|---|
+| ① | 原始 eportal URL | `.../login_sso.jsp?wlanuserip=...&wlanacname=...` | eportal 内部 |
+| ② | `redirect=` 参数值（**一次编码**） | `.../login_sso.jsp%3Fwlanuserip=...&wlanacname=...` | `login.html` URL 上 |
+| ③ | `oauthRedirect` 的 `redirect_uri`（**对 ② 再编码一次**） | `...%2Flogin_sso.jsp%253Fwlanuserip%3D...%26wlanacname%3D...` | 浏览器实际发送 |
+
+**验证方法**（下次改版先跑这个）：把 ③ `unquote` **一次**，应当**逐字节等于** ②。
+
+```python
+assert unquote(redirect_uri_param) == redirect_param_value   # 必须成立
+```
+
+**对代码的要求**：拿到 ② 之后**直接** `quote(value, safe="")`，**绝不能先 `unquote` 再编码**
+（那会得到 `%3F` 而不是 `%253F`，少一层）。`portal.py::extract_portal_url` 刻意
+“不再 decode，与前端 `getParam('redirect')` 行为一致”就是为此。
+
+> **隐含假设（脆弱点）**：`redirect` 必须是 URL 上的**最后一个参数**。
+> 现在的截取实现是 `final.split("redirect=", 1)[1]`，若平台将来在 `redirect` 之后
+> 再追加参数（如 `&foo=1`），`portal_url` 会被污染成 `...&foo=1` 并原样编码进去 → 500。
+> 又因为 eportal 参数之间用的是**裸 `&`**，无法用“截断到第一个 `&`”来修。
+> 平台改版时若报 500，**先检查 login.html 的 URL 参数顺序**。
+
+### 步骤 3：手机号 + 认证码（uid）换 satoken + oauthRedirect 换一次性 code
 
 ```
 POST https://api.215123.cn/ac/auth/loginByPhoneAndUid
@@ -181,7 +277,7 @@ GET <上一步 data 里的完整 eportal URL>
 
 ## 4. 凭证体系（核心）
 
-### 4.1 手机号 + UID（永久，无人值守的唯一正解）
+### 4.1 手机号 + 认证码（uid，永久，无人值守的唯一正解）
 
 - 换发接口：`POST /ac/auth/loginByPhoneAndUid`，body `{"phone","uid","captchaKey":""}`
   （`Content-Type: application/json`）。`phone` 是手机号，`uid` 是**登录认证码**
@@ -203,7 +299,7 @@ GET <上一步 data 里的完整 eportal URL>
 
 > `/web-app/auth/certificateLogin?openId=<id>` 目前**仍可用**（HTTP 200 + 正常 JWT），
 > 但它签发的会话**不能用于 `/ac/auth/oauthRedirect`**（一律 500「系统异常，请联系客服」）。
-> 因此守护已改走 4.1 的手机号 + UID 路线；openId 参数仅在逆向档案中保留。
+> 因此守护已改走 4.1 的手机号 + 认证码 路线；openId 参数仅在逆向档案中保留。
 > 同样的坑：`openId` 抓包 URL 里另有 `unionId=...`、`account=...`，实测均可省略。
 
 ### 4.3 SA_TOKEN（扫码 JWT，⚠️ 历史凭证：v5 已移除支持）
@@ -229,8 +325,63 @@ GET <上一步 data 里的完整 eportal URL>
 - **宽带账号绑定（selectBindBroadband / addBindBroadband）与 oauthRedirect 500 无关**：
   capture5 全程抓包证明浏览器从不调用这两个接口，该账号查绑定返回 `"data":[]` 也照样 200。
   守护中曾实现的“条件性补绑定”逻辑已按此结论**整体删除**——不要复活。
-  （另注：`addBindBroadband` 服务端自身有 bug，任何调用都报
-  `Field 'open_time' doesn't have a default value`。）
+  （另一个未决问题见 4.5：那个绑定页面**为什么会偶尔弹出来**，尚未定论。）
+
+### 4.5 ⚠️ 未决问题：绑定运营商页面的触发条件
+
+**状态：未定论，但对守护无影响。留给未来的现场。**
+
+**现象**：用户报告浏览网页认证时“偶尔弹出”一个要求填宽带账号/密码的
+「绑定运营商」表单页（`https://broadband.215123.cn/sso/static/form/bind-broadband-form.html`）。
+
+**已确证的事实**（证据：`captures/capture1/10.10.16.101.har` 含完整前端源码）：
+
+1. 打开该表单的唯一入口是 `broadband.js` 里的 `bindBroadband()` —— 它用
+   `layer.open({title:'绑定运营商', content:'./static/form/bind-broadband-form.html'})` 弹 iframe。
+2. `bindBroadband()` 的**唯一调用点**在 `sa.selectBindBroadband()` 内部，而且：
+
+   ```js
+   sa.selectBindBroadband = () => {
+     sa.ajax("/auth/selectBindBroadband", {}, res => {
+       if (res.code == 200) {
+         ... 第一个 for 循环：只 show/hide .binded/.to-bind/.btn ...
+         return          // ← 从这里就返回了
+         ... 后面给 $('.china-telecom') 等绑 bindBroadband() 点击事件的整段代码 ...
+       }                 // ← 全是不可达死代码
+     }, 'get');
+   }
+   ```
+
+3. 更关键：文件末尾的自动调用被**注释掉了** —— `// sa.selectBindBroadband();`
+4. `broadband.html` 里 4 个运营商按钮**全部**是 `onclick="selectedBroadband('chinaXxx')"`，
+   页面里没有任何 `bindBroadband` 字样。
+5. 全仓库抓包交叉验证：`bindBroadband` 只出现在 `captures/capture1` 的 JS 源码里；
+   `capture5`（两次完整上线流程）中 `selectBindBroadband` / `addBindBroadband` /
+   `bind-broadband-form` 的请求数为 **0**。
+6. `capture3`（`fidder.har` 第 88 条）与 `capture4` 确实加载过该表单页 —— 但
+   `capture4` 的 Edge 遥测字段是 `navigationUrl=https://.../bind-broadband-form.html`，
+   `capture3` 中该请求的 Referer 指向它自己、且前后**没有** `selectBindBroadband` 调用 ——
+   与“**直接手动打开该 URL**”的形态一致，而非自动弹出。
+
+**据此的推断（非结论）**：在抓到的这版前端（`broadband.js?v=9`）里，
+自动流程**不可能**弹出该表单；能弹出只有两种可能：
+
+- (a) 人工直接访问了该 URL（含浏览器自动补全/历史记录/标签页恢复）；
+- (b) 平台后来发布了新版 `broadband.js`，把 `sa.selectBindBroadband();` 的注释去掉
+  或删掉了那个提前 `return`。
+
+**未来如何一击定论**（下次再弹出时按此做，10 分钟可结案）：
+
+1. 弹窗前先抓包，只保留 `broadband.215123.cn` 与 `api.215123.cn` 两个域；
+2. 若有 `GET /ac/auth/selectBindBroadband` → 是 (b)，站点改了 JS，去看返回 `data` 是否为空数组；
+3. 若**没有**该请求、且请求 Referer 是自身或为空 → 是 (a)，属于人工/浏览器行为；
+4. 顺手 `curl -s "https://broadband.215123.cn/sso/static/broadband.js?v=9"` 看
+   `// sa.selectBindBroadband();` 这一行**是否仍被注释**——这是最省事的判定信号。
+
+**为什么现在可以不管它**：守护走纯 API 链路（换 token → oauthRedirect → 放行），
+不经过任何前端页面；且已实测：该账号 `selectBindBroadband` 返回 `"data":[]`（即“未绑定任何运营商”）
+时 `oauthRedirect` 依然 200 并正常上线。另外 `addBindBroadband` 服务端自身有 bug，
+任何调用都报 `Field 'open_time' doesn't have a default value` —— 即使将来真要绑，也得先由平台修。
 
 ## 5. 运营商参数
 
@@ -261,6 +412,10 @@ GET <上一步 data 里的完整 eportal URL>
 - 锐捷 Web 认证另有门户保活机制（默认心跳 15 分钟、连续 5 次无心跳即删会话，约 75 分钟），
   本站因上层 SSO 架构，日常掉线以 12:00 定时踢为主。
 - 脚本 30s 探测一次，踢下线后最坏约 30 秒内自动恢复；恢复动作 = 重新换 token + 全链路一次。
+- **现场实测（2026-09-18 23:13，路由器 `once`）**：单拍内 11.9 秒完成 offline→online、
+  尝试 1 次。时间构成 ≈ 探测(≤3s) + 换 token(1s) + 跟随门户跳转链 + oauth + 最后一跳放行
+  (≈10s)。恢复是**串行单线程**的，5s 窗口频率是“拍与拍之间”的间隔而非“每 5s 强制发请求”，
+  认证过程绝不会被打断或重复。（守卫逻辑见 scheduler.py：tick 阻塞跑完才 sleep。）
 
 ## 8. ⚠️ 危险接口与铁律
 
@@ -277,7 +432,7 @@ GET <上一步 data 里的完整 eportal URL>
 
 ## 9. 抓包方法论
 
-### 9.1 Fiddler 抓手机号与 UID（正式凭证）
+### 9.1 Fiddler 抓手机号与认证码（正式凭证）
 
 1. 安装 Fiddler Classic，`Tools → Options → HTTPS`：勾 *Decrypt HTTPS traffic*，
    `Actions → Trust Root Certificate` 信任根证书，重启。
@@ -370,13 +525,22 @@ procd 以 `python3 -m portal_login daemon` 启动并 respawn；配置为 INI（�
 - `/etc` 在 overlay（flash 持久化）：outages.jsonl 放这里。每次断网仅追加约 3 行，
   日写入量极小，无磨损担忧；需要更长留存可自行 logrotate/导出。
 
-### 11.4 v5 验证记录（2026-09-15 首测，2026-09-18 换凭证后复测）
+### 11.4 v5 验证记录
 
-- `selftest` 17/17：已在线无动作、302→SSO→loginByPhoneAndUid→oauth→eportal 单拍恢复、
-  401 自动重换 token 二次成功（mint×2/oauth×2）、detect off 不产生记录。
-- 真实接口：通过 v5 自身 httpclient（含 TLS 证书校验）调 `loginByPhoneAndUid` 成功取 token；
+**2026-09-15 首测（openId 凭证时代）**
+
+- `selftest` 全绿；真实接口调通；但端到端在路由器现场失败（oauthRedirect 500）。
+
+**2026-09-18 换凭证后复测（当前状态：已上线运行）**
+
+- `selftest` **17/17**：①已在线无动作、②302→SSO→loginByPhoneAndUid→oauth→eportal 单拍恢复、
+  ③401 自动重换 token 二次成功（mint×2/oauth×2）、④detect off 照常认证但不写记录。
+- 本机（Windows）经 v5 自身 httpclient（含 TLS 校验）调 `loginByPhoneAndUid` 成功取 token；
   缓存命中返回同一 token，invalidate 后重取得到不同 token（rnStr 随机性符合预期）。
-- 最后一跳 eportal 仅宿舍网可达，端到端留待路由器现场终验（README 第 4 节）。
+- **路由器现场端到端成功**（`PYTHONPATH=. python3 -m portal_login once`）：
+  `html_js_jump(200) → index.jsp` → 换 token → oauthRedirect 200 → 放行 → **204**，
+  单拍内 11.9 秒恢复，`outage_summary` 正常落盘。
+- 交叉矩阵确证根因（第 3 节）：同 redirect_uri 下，只有 `/ac/` 模块签发的 token 被接受。
 
 ## 12. 第三方实现对照
 
@@ -410,34 +574,85 @@ procd 以 `python3 -m portal_login daemon` 启动并 respawn；配置为 INI（�
 | certificateLogin(openId) | ⚠️ 实测 200 且 JWT 结构正常，但签发的会话**不被 /ac/ OAuth 承认** |
 | oauthRedirect | ✅ 带「来自 /ac/ 的」satoken 头成功，返回一次性 code 的 eportal URL |
 | oauthRedirect 业务 500 | HTTP 200 + `code:500`「系统异常，请联系客服」= **token 来自 /web-app/ 模块**，与请求头无关 |
+| 浏览器完整链路 | `index.jsp` →302→ `/ac/oauth2/authorize` →302→ `sso/login.html?redirect=` →(登录)→ `broadband.html` → `oauthRedirect` → `login_sso.jsp?code=` →302→ `success.jsp` |
+| redirect_uri 编码 | `unquote(redirect_uri)` **一次** 必须逐字节等于 `login.html` 上的 `redirect=` 值（即对 ② 再编码一次，`%3F`→`%253F`） |
+| extract_portal_url 隐含假设 | `redirect` 必须是 URL **最后一个参数**；后面追加参数会污染 portal_url（第 3 节步骤 2.5） |
 | 宽带绑定接口 | ❌ 与上线无关（浏览器全程不调用）；addBindBroadband 服务端有 open_time 字段 bug |
-| 最后一跳 | `GET http://10.10.16.101:8080/eportal/login_sso.jsp?code=...` 放行源 IP，302 到 success.jsp |
+| 绑定页弹出原因 | ⚠️ **未决**：现版 JS 里 `selectBindBroadband()` 的自动调用被注释、且内部有提前 return，理论上不可能自动弹；见第 4.5 节 |
+| 最后一跳 | `GET http://10.10.16.101:8080/eportal/login_sso.jsp?code=...` 放行源 IP，302 到 `success.jsp` |
+| 现场端到端 | ✅ 2026-09-18 23:13 路由器 `once` 单拍 11.9 秒恢复，尝试 1 次 |
 | 扫码 SA_TOKEN | JWT 无 exp、rnStr 每次随机、服务端可吊销，每日踢下线后大概率失效 |
 | getOpenId 反查 | 500 `操作失败:null`，死路 |
 | logout 类 GET | ⚠️ 立即注销 + 可能断整机网，严禁探测 |
 | 二维码根 URL | 非 MicroMessenger UA → 403，正常现象 |
 | 运营商 | chinaMobile（页面第 3 按钮） |
-| 强制下线 | 每日约 12:00，手机号+UID 模式 30s 内自动恢复 |
+| 强制下线 | 每日约 12:00，手机号+认证码 模式 30s 内自动恢复 |
 | client_id | `6d6bc6f3b5f04107a5fc1c62e39dd5f4`（改版前固定） |
-| 守护实现 | Python v5（纯标准库，2026-09-18 换凭证）：selftest 17/17、真实 loginByPhoneAndUid 验证通过；shell v4 已删除 |
+| 守护实现 | Python v5（纯标准库，2026-09-18 换凭证）：selftest 17/17、路由器现场端到端通过；shell v4 已删除 |
 
 ## 14. 证据目录导览
 
-[`captures/`](captures/) 下三组快照：
+[`captures/`](captures/) 下五组快照（**全部含真实凭证，已在 .gitignore 中排除，切勿外发**）：
 
-- `capture_20260915_145141/`、`capture_20260915_145235/`：最初网络环境诊断——
-  ipconfig、路由、ARP、DNS、门户探测、重定向链、门户 HTML、早期 api 测试、openId 获取说明。
-- `sso_capture_20260915_152903/`：**最有价值的一组**——
-  三个探测域名响应（`02_portal_*`）、SSO 页面（`03_*`）、api 系列试探（`05_api_test_1~4`）、
-  全量重定向链（`06_full_redirect_chain.txt`）、前端三件套源码
-  （`broadband.js` / `common.js` / `login.js`，接口参数的最终事实来源）。
-- 每个目录的 `capture_log.txt` 是抓取顺序与命令记录。
+- `capture1/`：早期网络环境快照。其中 `10.10.16.101.har` 的
+  `broadband.js?v=9` 与 `broadband.html` **正文**是前端行为的第一手证据
+  （第 4.5 节绑定页判定即基于此）。
+- `capture2/`、`capture3/`、`capture4/`：中间过程的试探抓包，价值有限；
+  `capture3` 第 88 条是唯一一次真正加载 `bind-broadband-form.html` 的记录。
+- `capture5/fiddler.har`：**当前最重要的一组**（215 个请求，2026-09-18）。
+  含两次完整上线流程，确证：
+  ① 浏览器实际请求体 `{"phone":...,"uid":"<认证码>","captchaKey":""}`；
+  ② 完整跳转链（含 `/ac/oauth2/authorize` 中转）；
+  ③ `redirect_uri` 的双层编码形态；
+  ④ 全程 **零** 次 `selectBindBroadband` / `addBindBroadband` / `bind-broadband-form`。
+
+> ⚠️ 早期还有两组目录（`capture_20260915_*`、`sso_capture_20260915_152903`）记录了
+> openId 时代的诊断过程，但**已不在仓库中**（只被 `scripts/capture*.ps1` 的默认输出路径
+> 提及）。需要那批前端源码时，改从 `capture1/10.10.16.101.har` 里抠
+> `broadband.js` / `common.js` / `login.js` 的正文——那是目前唯一仍在库内的第一手来源。
+
+- 各目录**只有 HAR 文件，没有 `capture_log.txt`**（早期脚本的产物，未一并归档）；
+  抓取顺序与命令看 `scripts/capture*.ps1` 自身的日志输出逻辑。
 
 ## 15. 安全与注意事项
 
-- 手机号 / UID 与 `/etc/portal_login.conf` 按上网密码级别保护：`chmod 600`，不入 git、不截图；
+- 手机号 / 认证码 与 `/etc/portal_login.conf` 按上网密码级别保护：`chmod 600`，不入 git、不截图；
   token 缓存只在 tmpfs（`/tmp/portal_login/`），重启即弃。
 - 本文件与所有归档样例保持脱敏；真实凭证只存在路由器本地配置。
+- **`captures/` 里的 HAR 全部含真实凭证**（手机号、认证码、JWT）。虽然 `.gitignore`
+  已排除，但复制/打包/上传仓库时务必确认它没被带上。要长期归档建议先脱敏。
 - 脚本默认禁用代理环境变量（`http_proxy/https_proxy/ALL_PROXY`），认证流量走 WAN 直连；
   开代理可能导致 eportal 内网地址不可达或源 IP 不匹配。
 - 自动认证只解决“WAN 口放行”，多设备共享的隐蔽性由上级 README 的 UA2F + rkp-ipid 负责，二者缺一不可。
+
+### 15.1 运维注意（改配置时的三个坑）
+
+1. **改了 `phone` / `user_uid` 后，必须手动删 token 缓存**：
+
+   ```sh
+   rm -f /tmp/portal_login/token.json && /etc/init.d/portal_login restart
+   ```
+
+   原因：token 缓存在 **tmpfs，`restart` 不会清空**；`TokenManager.get_token()` 会先读磁盘缓存，
+   于是继续用**旧账号**换来的会话，直到某次 401 才换新。`reload`（SIGHUP）同理，更不会清缓存。
+   只改 `service_name` / 时间窗等无凭证项则无此问题。
+2. **认证码填错时的重试频率**：换 token 失败不会写缓存，于是**每一拍都会重试一次登录接口**
+   （时间窗内 5s 一次，常态 30s 一次）。这是设计使然，但若日志持续出现
+   `loginByPhoneAndUid 未返回 token`，应**先停守护再排查凭证**，避免高频试探登录接口。
+   排查：`PYTHONPATH=. python3 -m portal_login status` 看 `last_error`，
+   或直接裸 curl 一次（第 4.1 节）。
+3. **两个“portal_login”路径别混淆**：配置文件是 **文件** `/etc/portal_login.conf`，
+   断网日志在 **目录** `/etc/portal_login/` 下（`outages.jsonl`）。二者互不干扰，
+   但删文件时容易误删目录。
+
+### 15.2 已知脆弱点（改版时优先怀疑）
+
+| 脆弱点 | 位置 | 触发条件 | 现象 |
+|---|---|---|---|
+| `redirect` 必须是最后一个参数 | `portal.py::extract_portal_url` | 平台在 `redirect` 后追加参数 | oauthRedirect 500 |
+| 编码层级假设（不 decode） | `portal.py::extract_portal_url` + `_oauth_once` | 平台改成两次编码的 `redirect` 值 | oauthRedirect 500 |
+| 现场 B 判定依赖字面 `redirect=` | 同上 | 参数名改成 `redirectUri=` 等 | 日志报 `无法提取 eportal URL` |
+| 换 token 必须同模块 | `auth.py::_mint` | 平台调整 `/ac/` 与 `/web-app/` 会话表关系 | oauthRedirect 500 |
+| 探测三态形态 | `detector.py` | 网关改成 200 无 JS 跳转的页面 | 日志报 `probe_unknown(200)` |
+
+以上任一失效时，按第 10 节的顺序定位，并回第 3 节的交叉矩阵验证。

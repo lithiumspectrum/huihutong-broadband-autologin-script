@@ -217,7 +217,7 @@ def cmd_selftest(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="python -m portal_login",
-        description="慧湖通门户自动认证守护 v5（手机号+UID 无人值守）")
+        description="慧湖通门户自动认证守护 v5（手机号+认证码 无人值守）")
     parser.add_argument("--config", help="配置文件路径（默认 /etc/portal_login.conf）")
     sub = parser.add_subparsers(dest="command", required=True)
 
