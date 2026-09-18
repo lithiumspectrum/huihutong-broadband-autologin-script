@@ -73,15 +73,20 @@ python3 -m portal_login <命令>
 1. PC 安装 Fiddler，开启 HTTPS 解密并信任根证书
 2. 微信 PC 版打开"慧湖通"小程序，进入"我的"页（会触发登录接口）
 3. 在抓包列表找 `POST api.215123.cn/ac/auth/loginByPhoneAndUid`，从请求体里复制
-   `phone` 与 `uid`（`uid` 是 19 位雪花 ID；`captchaKey` 实测可传空串）
+   `phone` 与 `uid`——**`uid` 就是你登录时填的那串「认证码」**（API 字段名叫 uid，
+   配置项因此叫 `user_uid`）；`captchaKey` 实测可传空串
 4. 验证（该接口是登录类接口，只发新 token，不踢会话）：
 
    ```sh
    curl -s -X POST "https://api.215123.cn/ac/auth/loginByPhoneAndUid" \
      -H "Content-Type: application/json" \
-     -d '{"phone":"<手机号>","uid":"<UID>","captchaKey":""}'
+     -d '{"phone":"<手机号>","uid":"<认证码>","captchaKey":""}'
    # 返回 "code":200 且 data.token 为 "eyJ..." 即有效
    ```
+
+> ℹ️ 响应里 `data.account` / `data.name` 都是 `null`，token 在 `data.token`；
+> token 是 JWT，payload 里的 `loginId`（`NONE:<19位数字>`）是**服务端按 uid 反查出的
+> 平台内部用户 ID**，与你要配置的 `uid`（认证码）不是同一个值，别混。
 
 > 🛠 仓库 `scripts/` 下有 PowerShell 抓包辅助脚本（`capture.ps1` / `capture_sso.ps1` / `parse_har.ps1`），平台改版重逆时可参考。
 
@@ -98,7 +103,7 @@ python3 -m portal_login <命令>
 ```ini
 [auth]
 phone = 你的手机号
-user_uid = 你的UID
+user_uid = 你的认证码          ; API 字段名为 uid，就是登录时填的那串数字
 service_name = chinaMobile      ; chinaMobile/chinaTelecom/chinaUnicom/local
 
 [daemon]
@@ -110,7 +115,7 @@ watch_interval = 5              ; 时间窗内探测间隔（秒）
 | 键 | 段 | 默认值 | 说明 |
 |---|---|---|---|
 | `phone` | auth | —（必填） | 手机号 |
-| `user_uid` | auth | —（必填） | 慧湖通用户 UID（19 位雪花 ID） |
+| `user_uid` | auth | —（必填） | 登录用的**认证码**（API 字段名为 `uid`） |
 | `service_name` | auth | `chinaMobile` | 运营商 |
 | `client_id` | auth | `6d6bc6f3b5f04107a5fc1c62e39dd5f4` | 实测固定值，不用改 |
 | `api_base` | auth | `https://api.215123.cn` | 改版重逆时可指向 mock |
@@ -233,7 +238,7 @@ reload 用 `procd_send_signal <服务名> '*' HUP` 发 SIGHUP 热重载。
 ## 致谢
 
 - [PairZhu/HuiHuTong](https://github.com/PairZhu/HuiHuTong) — 微信小程序抓包方法来源
-- [Dustella/Huihutong-portal-login](https://github.com/Dustella/Huihutong-portal-login) — 同源链路实现（注意其硬编码 `chinaTelecom`；其 openId 凭证路线现已失效）
+- [Dustella/Huihutong-portal-login](https://github.com/Dustella/Huihutong-portal-login) — 同源链路实现（注意其硬编码 `chinaTelecom`；其 openId 凭证路线现已失效，这样的误导让我浪费了很长一段时间试错）
 
 ## License
 

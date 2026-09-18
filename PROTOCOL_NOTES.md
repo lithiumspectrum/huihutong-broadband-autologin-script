@@ -108,7 +108,8 @@ GET http://connect.rom.miui.com/generate_204
 ```
 POST https://api.215123.cn/ac/auth/loginByPhoneAndUid
 Header: Content-Type: application/json
-Body:   {"phone":"<手机号>","uid":"<19位雪花ID>","captchaKey":""}
+Body:   {"phone":"<手机号>","uid":"<认证码>","captchaKey":""}
+         ↑ 浏览器实测原文，见 captures/capture5/fiddler.har
 
 → 200 {"success":true,"message":"操作成功！","code":200,"data":{
        "account":null,"name":null,
@@ -117,6 +118,9 @@ Body:   {"phone":"<手机号>","uid":"<19位雪花ID>","captchaKey":""}
 
 要点：
 
+- `uid` = 用户登录时填的**认证码**（短数字串），**不是** token payload 里
+  `loginId` 的 19 位平台内部用户 ID——后者是服务端按 `phone`+`uid` 反查出来的。
+  早期文档曾把两者混为一谈，已更正。
 - `account` / `name` 为 **null**（与旧 certificateLogin 不同），token 在 `data.token`。
 - `captchaKey` 传**空串**即可，实测不触发验证码，也没有风控拦裸 curl。
 - 与旧接口返回的 JWT **结构完全相同**：payload 都是
@@ -180,14 +184,15 @@ GET <上一步 data 里的完整 eportal URL>
 ### 4.1 手机号 + UID（永久，无人值守的唯一正解）
 
 - 换发接口：`POST /ac/auth/loginByPhoneAndUid`，body `{"phone","uid","captchaKey":""}`
-  （`Content-Type: application/json`）。`phone` 是账号绑定手机号，`uid` 是 19 位雪花用户 ID，
-  两者都是**永久值**，配置一次长期有效。
+  （`Content-Type: application/json`）。`phone` 是手机号，`uid` 是**登录认证码**
+  （配置项名 `user_uid`）；两者都是**永久值**，配置一次长期有效。
 - **必须用 `/ac/` 模块的登录接口**（见步骤 3 的 500 根因说明）；`/web-app/` 的
   certificateLogin 换来的 token 结构正常但不被 `/ac/` OAuth 承认。
 - 返回 token 是标准 JWT（HS256），payload：
   ```json
-  {"loginType":"login","loginId":"NONE:<19位用户ID>","rnStr":"<32位随机串>"}
+  {"loginType":"login","loginId":"NONE:<19位平台用户ID>","rnStr":"<32位随机串>"}
   ```
+  其中 `loginId` 是服务端解析出的平台内部用户 ID，**与请求里的 `uid`（认证码）无关**。
 - **每次调用都产生新 rnStr → 每次都是全新会话 token**；无 exp 字段，有效性由服务端会话表控制。
 - 登录类接口，**调用安全**：只发新 token，不清旧会话、不踢在线设备
   （与 logout 类接口性质相反，见第 8 节）。
@@ -278,7 +283,7 @@ GET <上一步 data 里的完整 eportal URL>
    `Actions → Trust Root Certificate` 信任根证书，重启。
 2. 微信 PC 版登录 → 打开慧湖通小程序 → “我的”页（触发登录）。
 3. Fiddler 过滤 `api.215123.cn`，找 `POST /ac/auth/loginByPhoneAndUid`，
-   从 **请求体** 抄 `phone` 与 `uid`。
+   从 **请求体** 抄 `phone` 与 `uid`（`uid` 即登录认证码）。
 4. 顺手记录响应体里的 `data.tokenName` 等用于核对归属。
 
 ### 9.2 浏览器抓上线链路（理解协议/改版核对）
@@ -401,7 +406,7 @@ procd 以 `python3 -m portal_login daemon` 启动并 respawn；配置为 INI（�
 |---|---|
 | 接入方式 | Web 门户（eportal + 微信 SSO），非 802.1X |
 | api.215123.cn 接口 | 裸 curl 可用，无 WAF/UA 拦截 |
-| loginByPhoneAndUid | ✅✅ 实测 200，POST JSON `{phone,uid,captchaKey:""}`；token rnStr 每次随机；安全接口不踢会话 |
+| loginByPhoneAndUid | ✅✅ 实测 200，POST JSON `{phone,uid,captchaKey:""}`（`uid`=登录认证码）；token rnStr 每次随机；安全接口不踢会话 |
 | certificateLogin(openId) | ⚠️ 实测 200 且 JWT 结构正常，但签发的会话**不被 /ac/ OAuth 承认** |
 | oauthRedirect | ✅ 带「来自 /ac/ 的」satoken 头成功，返回一次性 code 的 eportal URL |
 | oauthRedirect 业务 500 | HTTP 200 + `code:500`「系统异常，请联系客服」= **token 来自 /web-app/ 模块**，与请求头无关 |

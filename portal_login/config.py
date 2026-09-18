@@ -11,7 +11,7 @@ import configparser
 # 键 → (section, 默认值, 类型)
 _DEFAULTS = {
     # [auth]
-    # 凭证：手机号 + 慧湖通用户 UID（loginByPhoneAndUid 换 satoken）。
+    # 凭证：手机号 + 登录认证码（loginByPhoneAndUid 换 satoken，API 字段名为 uid）。
     # 注意键名不能叫 UID——shell 里 UID 是只读内置变量，会污染环境变量覆盖。
     "PHONE":          ("auth", "", str),
     "USER_UID":       ("auth", "", str),
