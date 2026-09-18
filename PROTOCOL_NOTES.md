@@ -302,7 +302,7 @@ scheduler.py  主循环：时间窗换档(30s/5s)、当拍立即登录、min(2·
 tools/mock_portal.py  本机 ThreadingHTTPServer 模拟整条链路，selftest 四场景 16 断言
 ```
 
-部署形态：代码 `/usr/local/lib/portal_login/`（`portal_login/` + `tools/`），
+部署形态：代码 `/root/portal_login/`（`portal_login/` + `tools/`），
 procd 以 `python3 -m portal_login daemon` 启动并 respawn；配置为 INI（不再是 shell env）。
 
 ### 11.3 数据落盘约定（OpenWrt 文件系统特性）

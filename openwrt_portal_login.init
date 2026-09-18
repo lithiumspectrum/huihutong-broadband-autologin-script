@@ -8,7 +8,7 @@
 #   - 易断网时间窗内自动加速探测，离线指数退避快速重连
 #
 # 部署：
-#   代码目录  /usr/local/lib/portal_login/（含 portal_login/ 与 tools/）
+#   代码目录  /root/portal_login/（含 portal_login/ 与 tools/）
 #   配置文件  /etc/portal_login.conf（INI，chmod 600）
 #   依赖      python3-light（标准库即可，无需 pip）
 #
@@ -19,7 +19,7 @@
 START=99
 USE_PROCD=1
 
-PROG_DIR=/usr/local/lib/portal_login
+PROG_DIR=/root/portal_login
 
 start_service() {
 	[ -x /usr/bin/python3 ] || { echo "python3 未安装：opkg install python3-light（24.10+ 用 apk add）"; return 1; }

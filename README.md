@@ -56,7 +56,7 @@ python3 -c "import http.client, ssl, json, logging, configparser"
 把 `portal_login/` 目录放到任意位置，以其**上级目录**为 `PYTHONPATH` 运行：
 
 ```sh
-export PYTHONPATH=/usr/local/lib/portal_login   # 假设包位于 /usr/local/lib/portal_login/portal_login/
+export PYTHONPATH=/root/portal_login   # 假设包位于 /root/portal_login/portal_login/
 python3 -m portal_login <命令>
 ```
 
@@ -160,8 +160,8 @@ scheduler.py   主循环：时间窗换档、当拍立即登录、指数退避�
 
 ```sh
 # ① 上传代码与 init 服务脚本（电脑上，仓库根目录执行）
-ssh root@192.168.1.1 'mkdir -p /usr/local/lib/portal_login'
-scp -r portal_login tools root@192.168.1.1:/usr/local/lib/portal_login/
+ssh root@192.168.1.1 'mkdir -p /root/portal_login'
+scp -r portal_login tools root@192.168.1.1:/root/portal_login/
 scp openwrt_portal_login.init root@192.168.1.1:/etc/init.d/portal_login
 
 # ② 本地复制模板 → 填入 open_id → 上传（含凭证的本地副本用完即删）
@@ -180,11 +180,11 @@ ssh root@192.168.1.1 'chmod 600 /etc/portal_login.conf && \
 部署后可选自测（全程本机 mock，不接触真实门户）：
 
 ```sh
-ssh root@192.168.1.1 'cd /usr/local/lib/portal_login && PYTHONPATH=. python3 -m portal_login selftest'
+ssh root@192.168.1.1 'cd /root/portal_login && PYTHONPATH=. python3 -m portal_login selftest'
 ```
 
 procd 服务要点：`command /usr/bin/python3 -m portal_login daemon`、
-`env PYTHONPATH=/usr/local/lib/portal_login`、`respawn` 崩溃重启、
+`env PYTHONPATH=/root/portal_login`、`respawn` 崩溃重启、
 reload 用 `procd_send_signal <服务名> '*' HUP` 发 SIGHUP 热重载。
 完整 init 脚本见仓库根目录 `openwrt_portal_login.init`。
 
