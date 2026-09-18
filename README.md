@@ -203,6 +203,6 @@ reload 用 `procd_send_signal <服务名> '*' HUP` 发 SIGHUP 热重载。
 - [PairZhu/HuiHuTong](https://github.com/PairZhu/HuiHuTong) — openId 抓包方法来源
 - [Dustella/Huihutong-portal-login](https://github.com/Dustella/Huihutong-portal-login) — 同源链路实现（注意其硬编码 `chinaTelecom`）
 
-## License
+## License
 
 MIT，见 [LICENSE](LICENSE)。
