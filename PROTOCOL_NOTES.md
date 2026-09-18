@@ -663,7 +663,8 @@ procd 以 `python3 -m portal_login daemon` 启动并 respawn；配置为 INI（�
    | **填错**（非空但认证码错） | 不退出。每拍 `loginByPhoneAndUid` 失败 → `AuthError` 被 tick 捕获打 `exception` → 回退重试 | 不需要（进程一直活着） | 不能，会一直试探登录接口 |
 
    所以：**"procd 放弃重启"只会由"缺失"触发**，且放弃前已刷过 5 次 error 日志；
-   长期无人看日志时，可 `logread | grep portal_login` 回查。要彻底自愈把
+   长期无人看日志时，可 `logread -e portal_login` 回查（日志格式含 logger 名，
+   也可用 `-e python` 按 syslog tag 匹配）。要彻底自愈把
    `respawn` 第三个参数改 `0`（无限重试），代价是真故障时每 30s 刷一次日志。
 
    **但 logread 本身不可靠**：它是环形缓冲且**重启即失**。所以"填错"这类

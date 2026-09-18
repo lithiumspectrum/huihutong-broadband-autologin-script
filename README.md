@@ -190,20 +190,27 @@ jq -s '[.[]|select(.event=="outage_summary")] | "共 \(length) 次，累计 \(ma
 
 ## 查看日志
 
-守护的运行日志走 syslog（procd 把 stdout/stderr 交给 logd）：
+守护的运行日志走 syslog（procd 把 stdout/stderr 交给 logd）。有两种过滤方式：
+
+| 过滤串 | 匹配依据 | 说明 |
+|---|---|---|
+| `-e portal_login` | 日志**正文**里的 logger 名 | **推荐**，只命中本服务，不受其他 Python 服务干扰 |
+| `-e python` | logd 加的 **syslog tag**（`python3[pid]:`） | 兜底，tag 来自启动命令 `/usr/bin/python3` |
 
 ```sh
-logread -e portal_login          # 全部守护日志
+logread -e portal_login          # 推荐：只看本服务
 logread -f -e portal_login       # 实时跟踪
 logread -e portal_login | tail -50
+
+logread -e python                # 兜底：按 tag 匹配（会混入其他 python 服务）
 ```
 
-输出形如：
+输出形如（`python3[pid]:` 前缀由 logd 添加，日期与 pid 因机而异）：
 
 ```
-[2026-09-19 12:00:03] WARNING 检测到断网：redirect(302) -> http://10.10.16.101:8080/...
-[2026-09-19 12:00:05] INFO 已通过 手机号+认证码 换取新 satoken
-[2026-09-19 12:00:09] INFO 网络已恢复（离线 6.1 秒，尝试 1 次）
+Fri Sep 19 12:00:03 2026 daemon.info python3[12345]: [2026-09-19 12:00:03] WARNING portal_login 检测到断网：redirect(302) -> http://10.10.16.101:8080/...
+Fri Sep 19 12:00:05 2026 daemon.info python3[12345]: [2026-09-19 12:00:05] INFO portal_login 已通过 手机号+认证码 换取新 satoken
+Fri Sep 19 12:00:09 2026 daemon.info python3[12345]: [2026-09-19 12:00:09] INFO portal_login 网络已恢复（离线 6.1 秒，尝试 1 次）
 ```
 
 > ⚠️ `logread` 是**环形缓冲且重启即失**（缓冲大小见 `/etc/config/system` 的 `log_size`）。
