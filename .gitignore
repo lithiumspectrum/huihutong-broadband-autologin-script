@@ -440,3 +440,5 @@ __marimo__/
 # this project
 reference/
 captures/
+# 部署时本地复制填写的凭证副本（含 open_id，禁止入库；examples/ 下模板不受影响）
+/portal_login.conf

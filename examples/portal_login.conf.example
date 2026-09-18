@@ -1,0 +1,54 @@
+# portal_login 配置模板
+# 部署：复制本文件 → 填入 open_id → 上传为 /etc/portal_login.conf 并 chmod 600
+# 完整配置项说明见 README「配置」小节
+
+[auth]
+# 必填：微信 openId（o 开头约 28 字符），获取方法见 README「获取 OPEN_ID」小节
+open_id =
+
+# 运营商：chinaMobile / chinaTelecom / chinaUnicom / local
+service_name = chinaMobile
+
+# 以下均为可选项，不写则走代码内默认值
+
+# 实测固定值，不用改
+# client_id = 6d6bc6f3b5f04107a5fc1c62e39dd5f4
+
+# 默认 https://api.215123.cn ，改版重逆时可指向本机 mock
+# api_base = https://api.215123.cn
+
+[daemon]
+# 常态探测间隔（秒）
+interval = 30
+
+# 易断网时间窗，逗号分隔多个，支持跨午夜（如 23:50-00:10）
+watch_windows = 11:55-12:10
+
+# 时间窗内探测间隔（秒）
+watch_interval = 5
+
+# 离线重试退避基数/上限（秒），上限且不超过当前档间隔
+# retry_base = 2
+# retry_cap = 30
+
+# ±20% 随机抖动，防整点齐刷
+# jitter = 0.2
+
+# 超时秒数
+# probe_timeout = 10
+# api_timeout = 15
+
+# 探测 URL，被劫持时可换 http://www.gstatic.com/generate_204
+# probe_url = http://connect.rom.miui.com/generate_204
+
+# 断网记录总开关（不影响自动认证）
+# detect_enabled = yes
+
+# 实时状态文件（tmpfs，重启清空）
+# state_file = /tmp/portal_login/state.json
+
+# 断网历史（overlay 持久化）
+# outage_log = /etc/portal_login/outages.jsonl
+
+# token 缓存（tmpfs，0600）
+# token_cache = /tmp/portal_login/token.json
