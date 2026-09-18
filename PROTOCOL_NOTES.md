@@ -93,7 +93,14 @@ GET http://connect.rom.miui.com/generate_204
   注意 `redirect` 值是**一次 URL 编码**串（`?` 呈 `%3F`，但参数间 `&` 是裸字符），
   与前端 `broadband.js` 的 `getParam('redirect')` 行为一致——**直接截取原文，不要再 decode**。
 
-脚本里对应 `get_portal_url()`：`curl -L` 取 `url_effective`，按 `/eportal/` 或 `redirect=` 两种形态提取。
+> **现场 B 的频率比想象高**：原以为只在某些网关形态出现，实测 2026-09-18 17:00 非踢下线时段
+> 路由器重启后即走现场 B（probe 拿到 `index.jsp` → 跟随到 `broadband.215123.cn/sso/login.html?redirect=...`）。
+> 现场 A 主要在 12:00 RADIUS 强踢瞬间出现。**v5 代码现场 B 截取曾存在 bug**：判断条件
+> `"redirect=" in final and "/eportal/" not in final` 永远为 False（redirect= 的值就是 eportal URL，必含 /eportal/），
+> 导致 SSO URL 整串被当 redirect_uri 传给 oauthRedirect → 服务端业务 500。已于 2026-09-18 修复，
+> 现逻辑为 `if "redirect=" in final: final = final.split("redirect=", 1)[1]`。
+
+脚本里对应 `extract_portal_url()`：跟随重定向链取 `resp.url`，按 `redirect=` 截取。
 
 ### 步骤 3：OPEN_ID 换 satoken + oauthRedirect 换一次性 code
 
@@ -124,6 +131,32 @@ Header: satoken: <JWT>
 - token 失效时此接口返回 `code:401`——脚本 OPEN_ID 模式据此重新换发 token 并重试**一次**。
 - 也可以用扫码得到的 SA_TOKEN 调本接口，但它会在每日踢下线后失效。
 
+> ⚠️ **2026-09-18 发现 oauthRedirect 业务 500 异常**：路由器重启/长时间离线后，eportal 可能
+> "忘记"该设备的 MAC/会话状态，此时 oauthRedirect 即使用正确 token + 正确 redirect_uri 仍返回
+> HTTP 200 / body `{"success":false,"message":"系统异常，请联系客服","code":500,...}`。
+> 用户描述：完整登录链路在选完服务商后**条件性地需要输入宽带账号 + 密码**（"有时自动跳过"），
+> 这一**步骤 3.5 当前未实现、未抓包记录**，是 v5 在重启后无法自愈的根因。
+> 假设：12:00 RADIUS 强踢时 MAC 仍在 eportal 缓存 → 跳过 3.5 直接放行；
+> 重启/长时间离线后 MAC 缓存失效 → 触发 3.5 → v5 没补这一步 → oauthRedirect 业务 500。
+> 待抓包补全：见下方"步骤 3.5（待补）"。
+
+### 步骤 3.5（待补）：条件性账号密码提交 ⚠️ 未抓包
+
+**状态**：2026-09-18 由用户报告其存在，但 API 形态未知，尚未抓包确认。
+
+**触发条件**（假设）：
+- oauthRedirect 返回 body `code:500` 且 `message` 含 "系统异常，请联系客服"
+- 此时 eportal 已要求补"宽带账号 + 密码"步骤，但服务端未给出明确提示
+
+**待抓包要点**（在 Windows + Fiddler 下走完整链路时确认）：
+1. 在 oauthRedirect 之后是否有额外接口（候选名：`/ac/auth/submitAccount`、`/ac/bandwidth/login`、`/ac/auth/login`）
+2. 请求方法（GET 还是 POST）、参数名、是否仍用 satoken 头
+3. 返回 body 形态、成功后是否回带一次性 code
+4. 提交后是否还需要再调一次 oauthRedirect 才能拿到 code
+
+**抓到后的实现位置**：`portal_login/portal.py:perform_login` ——
+在 `_oauth_once` 失败且返回 `code:500` 时尝试补提交账号密码，再重试一次 oauth。
+
 ### 步骤 4：访问 eportal URL 完成 IP 放行
 
 ```
@@ -134,8 +167,9 @@ GET <上一步 data 里的完整 eportal URL>
 此跳触发 NAS 设备对**来源 IP（路由器 WAN 口 IP）** 放通。用 **GET**（HEAD 是否被记账未验证，
 不要依赖）。完成后立即复查步骤 1，确认 204。
 
-> 整个登录是“用 HTTP 请求让网关把当前源 IP 加白”，不涉及密码提交；凭证的作用仅是让 api.215123.cn
-> 签发一次性 code，证明“这个微信用户订购了该运营商套餐”。
+> 整个登录是“用 HTTP 请求让网关把当前源 IP 加白”，**多数场景**不涉及密码提交；
+> 凭证的作用仅是让 api.215123.cn 签发一次性 code，证明“这个微信用户订购了该运营商套餐”。
+> 例外见步骤 3.5：eportal 忘 MAC 时条件性要求宽带账号密码，目前未实现也未抓包。
 
 ## 4. 凭证体系（核心）
 
