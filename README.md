@@ -10,9 +10,8 @@
 
 ## 特性
 
-- **无人值守**：以微信 openId 为唯一永久凭证，自动换发 satoken，401 自动作废重换并重试
-- **条件性宽带绑定自愈**：eportal 忘记设备且服务商未绑定时（oauthRedirect 业务 500），
-  自动查绑定并按需补交宽带账号密码后重试
+- **无人值守**：以手机号 + 用户 UID 为唯一永久凭证，自动换发 satoken，
+  401 自动作废重换并重试
 - **每日强制下线自愈**：覆盖每日约 12:00 的 RADIUS 踢下线，最坏数秒内自动恢复
 - **智能频率**：常态 30s 探测，易断网时间窗内（默认 11:55-12:10）自动加速到 5s；
   离线时指数退避 `min(2·2^(n-1), retry_cap, 档间隔)`（1s 下限）+ ±20% 抖动
@@ -29,19 +28,19 @@
 ```
 ① GET http://connect.rom.miui.com/generate_204   三态探测（204 在线 / 302 或 200-JS跳转 未认证 / 网络异常离线）
 ② 跟随重定向链，提取 eportal login_sso.jsp 基址（作为 redirect_uri）
-③ GET api.215123.cn/web-app/auth/certificateLogin?openId=<OPEN_ID>   换发 satoken(JWT)
-④ 查 /ac/auth/selectBindBroadband，当前服务商未绑定才 POST addBindBroadband 补交宽带账号密码（条件性）
-⑤ GET api.215123.cn/ac/auth/oauthRedirect（satoken 头）              换一次性 code
-⑥ GET <带 code 的 eportal URL>                                       放行源 IP
-⑦ 复查 generate_204 = 204                                            确认上线
+③ POST api.215123.cn/ac/auth/loginByPhoneAndUid  {phone, uid, captchaKey:""}  换发 satoken(JWT)
+④ GET api.215123.cn/ac/auth/oauthRedirect（satoken 头）              换一次性 code
+⑤ GET <带 code 的 eportal URL>                                       放行源 IP
+⑥ 复查 generate_204 = 204                                            确认上线
 ```
 
-`oauthRedirect` 返回 401 时，自动用 openId 重新换发 token 并重试一次。
-凭证的唯一作用是让 API 签发一次性 code，证明"该微信用户订购了对应运营商套餐"。
+`oauthRedirect` 返回 401 时，自动用手机号 + UID 重新换发 token 并重试一次。
+凭证的唯一作用是让 API 签发一次性 code，证明"该用户订购了对应运营商套餐"。
 
-> 第 ④ 步即"条件性宽带账号密码提交"：eportal 忘记该设备（如路由器重启、长时间离线）且
-> 该服务商未绑定时，`oauthRedirect` 会抛业务 500「系统异常，请联系客服」。
-> 配置了 `broadband_account` / `broadband_password` 后守护会自动补绑定；未配置则跳过该步。
+> ⚠️ 换 token **必须走 `/ac/auth/loginByPhoneAndUid`**。旧的
+> `/web-app/auth/certificateLogin?openId=` 仍会返回 200 和一个结构完全正常的 JWT，
+> 但 `/ac/auth/oauthRedirect` 会以 `code:500`「系统异常，请联系客服」拒绝它——
+> 两个模块的会话表不互通（详见 [PROTOCOL_NOTES.md](PROTOCOL_NOTES.md) 第 3、4 节）。
 
 > 📄 接口原理、抓包事实、踩坑记录（给未来维护者/AI 的完整逆向档案）：
 > **[PROTOCOL_NOTES.md](PROTOCOL_NOTES.md)**
@@ -67,39 +66,40 @@ export PYTHONPATH=/root/portal_login   # 假设包位于 /root/portal_login/port
 python3 -m portal_login <命令>
 ```
 
-## 获取 OPEN_ID（唯一需要手动获取的凭证）
+## 获取手机号与 UID（唯一需要手动获取的凭证）
 
-openId 是微信用户在该小程序下的永久标识，获取一次永久有效：
+两者都是永久值，获取一次长期有效：
 
 1. PC 安装 Fiddler，开启 HTTPS 解密并信任根证书
-2. 微信 PC 版打开"慧湖通"小程序，进入"我的"页
-3. 在抓包列表找 `api.215123.cn/web-app/auth/certificateLogin?openId=xxxx`，复制 `openId` 参数
-   （`o` 开头约 28 字符；`unionId`/`account` 参数均不需要）
-4. 验证（该接口安全，只发新 token 不踢会话）：
+2. 微信 PC 版打开"慧湖通"小程序，进入"我的"页（会触发登录接口）
+3. 在抓包列表找 `POST api.215123.cn/ac/auth/loginByPhoneAndUid`，从请求体里复制
+   `phone` 与 `uid`（`uid` 是 19 位雪花 ID；`captchaKey` 实测可传空串）
+4. 验证（该接口是登录类接口，只发新 token，不踢会话）：
 
    ```sh
-   curl -s "https://api.215123.cn/web-app/auth/certificateLogin?openId=<你的OpenID>"
-   # 返回 "code":200 且含 "token":"eyJ..." 即有效
+   curl -s -X POST "https://api.215123.cn/ac/auth/loginByPhoneAndUid" \
+     -H "Content-Type: application/json" \
+     -d '{"phone":"<手机号>","uid":"<UID>","captchaKey":""}'
+   # 返回 "code":200 且 data.token 为 "eyJ..." 即有效
    ```
 
 > 🛠 仓库 `scripts/` 下有 PowerShell 抓包辅助脚本（`capture.ps1` / `capture_sso.ps1` / `parse_har.ps1`），平台改版重逆时可参考。
 
-> 🔒 openId 等同上网密码：配置文件 `chmod 600`，勿提交 git、勿截图外发。
+> 🔒 手机号 + UID 等同上网密码：配置文件 `chmod 600`，勿提交 git、勿截图外发。
 
 ## 配置
 
 默认读取 `/etc/portal_login.conf`（可用 `--config` 或环境变量 `PORTAL_LOGIN_CONF` 指定），
-同名大写环境变量可覆盖任意配置项。完整模板见 [`examples/portal_login.conf.example`](examples/portal_login.conf.example)，部署时本地复制填入 `OPEN_ID` 后上传（流程见下文「OpenWrt 部署」）：
+同名大写环境变量可覆盖任意配置项（注意凭证键名是 `PHONE` / `USER_UID`，
+不要写成 `UID`——shell 里 `UID` 是只读内置变量）。完整模板见
+[`examples/portal_login.conf.example`](examples/portal_login.conf.example)，
+部署时本地复制填入 `phone` / `user_uid` 后上传（流程见下文「OpenWrt 部署」）：
 
 ```ini
 [auth]
-open_id = 你的OpenID
+phone = 你的手机号
+user_uid = 你的UID
 service_name = chinaMobile      ; chinaMobile/chinaTelecom/chinaUnicom/local
-
-; 条件性宽带账号密码（eportal 忘记该设备时自动补绑定用）；
-; 该服务商已绑定则不会提交，留空则整步跳过
-broadband_account = 你的宽带账号
-broadband_password = 你的宽带密码
 
 [daemon]
 interval = 30                   ; 常态探测间隔（秒）
@@ -109,10 +109,9 @@ watch_interval = 5              ; 时间窗内探测间隔（秒）
 
 | 键 | 段 | 默认值 | 说明 |
 |---|---|---|---|
-| `open_id` | auth | —（必填） | 微信永久标识 |
+| `phone` | auth | —（必填） | 手机号 |
+| `user_uid` | auth | —（必填） | 慧湖通用户 UID（19 位雪花 ID） |
 | `service_name` | auth | `chinaMobile` | 运营商 |
-| `broadband_account` / `broadband_password` | auth | 空（跳过） | 条件性补绑定用的宽带账号密码 |
-| `bind_service` | auth | 空 | 绑定用的 `service` 数字，空则按 `service_name` 推导 |
 | `client_id` | auth | `6d6bc6f3b5f04107a5fc1c62e39dd5f4` | 实测固定值，不用改 |
 | `api_base` | auth | `https://api.215123.cn` | 改版重逆时可指向 mock |
 | `interval` / `watch_interval` | daemon | `30` / `5` | 探测间隔（常态/时间窗内） |
@@ -133,7 +132,7 @@ python3 -m portal_login daemon      # 守护主循环（前台运行，适合 sy
 python3 -m portal_login once        # 只跑一拍：在线退 0，离线立即登录，成功 0/失败 1
 python3 -m portal_login status      # 实时状态 JSON
 python3 -m portal_login detect off  # 关闭断网记录（照常认证，适合割接演练）
-python3 -m portal_login selftest    # 本机 mock 全链路自测，25 项断言
+python3 -m portal_login selftest    # 本机 mock 全链路自测，17 项断言
 ```
 
 > `selftest` 依赖仓库中的 `tools/mock_portal.py`（模拟整条门户链路），
@@ -161,7 +160,7 @@ __main__.py    CLI: daemon | once | status | detect on/off | selftest
 config.py      INI + 环境变量覆盖 + 时间窗判定（支持跨午夜）
 httpclient.py  http.client 长连接：按主机缓存、跟随 3xx、断线重建重试一次、天然禁代理
 detector.py    三态探测 → ProbeResult(online/code/redirect/reason)
-auth.py        TokenManager：内存 + tmpfs 磁盘缓存(0600) + 401 作废重换
+auth.py        TokenManager：loginByPhoneAndUid 换发 + 内存/tmpfs 缓存(0600) + 401 作废重换
 portal.py      提取 eportal 基址 → oauthRedirect(401 重试) → GET 放行 → 204 复核
 recorder.py    JSONL 事件 + state.json + 运行时控制文件（原子写入）
 scheduler.py   主循环：时间窗换档、当拍立即登录、指数退避、抖动、信号处理
@@ -197,7 +196,7 @@ scp openwrt_portal_login.init root@192.168.1.1:/etc/init.d/portal_login
 > ```
 
 ```sh
-# ② 本地复制模板 → 填入 open_id → 上传（含凭证的本地副本用完即删）
+# ② 本地复制模板 → 填入 phone / user_uid → 上传（含凭证的本地副本用完即删）
 cp examples/portal_login.conf.example portal_login.conf
 vi portal_login.conf
 scp portal_login.conf root@192.168.1.1:/etc/portal_login.conf
@@ -228,13 +227,13 @@ reload 用 `procd_send_signal <服务名> '*' HUP` 发 SIGHUP 热重载。
 
 - **绝不调用** `api.215123.cn/ac/sso/logout` 或 `/ac/auth/logout` 做探测——
   GET 即注销，会吊销 token 并可能立刻踢断整机网络。判在线只用 generate_204。
-- `certificateLogin` 是安全登录接口（只发新 token，不踢会话），可放心重试。
+- `loginByPhoneAndUid` 是安全登录接口（只发新 token，不踢会话），可放心重试。
 - 配置文件与 token 缓存均 0600；token 缓存只落 tmpfs。
 
 ## 致谢
 
-- [PairZhu/HuiHuTong](https://github.com/PairZhu/HuiHuTong) — openId 抓包方法来源
-- [Dustella/Huihutong-portal-login](https://github.com/Dustella/Huihutong-portal-login) — 同源链路实现（注意其硬编码 `chinaTelecom`）
+- [PairZhu/HuiHuTong](https://github.com/PairZhu/HuiHuTong) — 微信小程序抓包方法来源
+- [Dustella/Huihutong-portal-login](https://github.com/Dustella/Huihutong-portal-login) — 同源链路实现（注意其硬编码 `chinaTelecom`；其 openId 凭证路线现已失效）
 
 ## License
 

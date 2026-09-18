@@ -1,24 +1,17 @@
 # portal_login 配置模板
-# 部署：复制本文件 → 填入 open_id → 上传为 /etc/portal_login.conf 并 chmod 600
+# 部署：复制本文件 → 填入 phone / user_uid → 上传为 /etc/portal_login.conf 并 chmod 600
 # 完整配置项说明见 README「配置」小节
 
 [auth]
-# 必填：微信 openId（o 开头约 28 字符），获取方法见 README「获取 OPEN_ID」小节
-open_id =
+# 必填：手机号（loginByPhoneAndUid 的 phone）
+phone =
+
+# 必填：慧湖通用户 UID（19 位雪花 ID，loginByPhoneAndUid 的 uid）
+# 获取方法见 README「获取手机号与 UID」小节
+user_uid =
 
 # 运营商：chinaMobile / chinaTelecom / chinaUnicom / local
 service_name = chinaMobile
-
-# 条件性宽带账号密码：eportal "忘记"该设备（路由器重启/长时间离线）且该服务商
-# 未绑定时，平台会要求补交宽带账号密码，否则 oauthRedirect 抛业务 500。
-# 守护会先查绑定（selectBindBroadband），未绑定才提交（addBindBroadband）。
-# 该服务商已绑定时不会重复提交；两项留空则整步跳过（老账号已绑定，通常无需填）。
-# broadband_account =
-# broadband_password =
-
-# 绑定用的 service 数字（0=电信 1=移动 2=联通 3=本地内网），
-# 留空则按 service_name 自动推导
-# bind_service =
 
 # 以下均为可选项，不写则走代码内默认值
 

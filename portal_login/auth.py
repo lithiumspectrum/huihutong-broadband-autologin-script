@@ -1,8 +1,8 @@
-"""OpenID → satoken 的换发与安全缓存。
+"""手机号 + UID → satoken 的换发与安全缓存。
 
-v5 起 satoken 不再是用户配置项（扫码 JWT 路径已移除）：
-它只是 certificateLogin 接口签发的临时会话凭证，由守护进程自动换发、
-缓存、失效时自动刷新。
+satoken 不是用户配置项（扫码 JWT 路径已移除）：它只是
+`POST /ac/auth/loginByPhoneAndUid` 签发的临时会话凭证，由守护进程
+自动换发、缓存、失效时自动刷新。
 
 缓存层级：
   1. 进程内存（主）
@@ -28,17 +28,21 @@ class TokenManager:
         self._token = None
 
     # ------------------------------------------------------------------ 内部
-    def _mint_via_openid(self):
-        url = ("%s/web-app/auth/certificateLogin?openId=%s"
-               % (self._cfg.API_BASE.rstrip("/"), self._cfg.OPEN_ID))
+    def _mint(self):
+        url = "%s/ac/auth/loginByPhoneAndUid" % self._cfg.API_BASE.rstrip("/")
+        # 与前端同构：三个字段全字符串；captchaKey 传空串即可（实测无验证码）
+        body = json.dumps({"phone": self._cfg.PHONE,
+                           "uid": self._cfg.USER_UID,
+                           "captchaKey": ""})
         try:
-            resp = self._client.get(url, timeout=self._cfg.API_TIMEOUT)
+            resp = self._client.post(url, body, timeout=self._cfg.API_TIMEOUT,
+                                     headers={"Content-Type": "application/json"})
         except HttpClientError as exc:
-            raise AuthError("certificateLogin 网络失败: %s" % exc)
+            raise AuthError("loginByPhoneAndUid 网络失败: %s" % exc)
 
         token, error = _parse_token(resp)
         if not token:
-            raise AuthError("certificateLogin 未返回 token: %s" % error)
+            raise AuthError("loginByPhoneAndUid 未返回 token: %s" % error)
         return token
 
     def _load_disk(self):
@@ -78,7 +82,7 @@ class TokenManager:
 
     # ------------------------------------------------------------------ 对外
     def get_token(self, force_refresh=False):
-        """获取可用 token；force_refresh 时强制调 certificateLogin 换新。"""
+        """获取可用 token；force_refresh 时强制调 loginByPhoneAndUid 换新。"""
         if not force_refresh:
             if self._token:
                 return self._token
@@ -86,10 +90,10 @@ class TokenManager:
             if disk:
                 self._token = disk
                 return disk
-        token = self._mint_via_openid()
+        token = self._mint()
         self._token = token
         self._save_disk(token)
-        self._log.info("已通过 OPEN_ID 换取新 satoken")
+        self._log.info("已通过 手机号+UID 换取新 satoken")
         return token
 
     def invalidate(self):
@@ -102,7 +106,7 @@ class TokenManager:
 
 
 def _parse_token(resp):
-    """从 certificateLogin 响应取 data.token。返回 (token, error)。"""
+    """从 loginByPhoneAndUid 响应取 data.token。返回 (token, error)。"""
     if resp.status != 200:
         return None, "HTTP %s" % resp.status
     try:

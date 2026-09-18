@@ -11,15 +11,13 @@ import configparser
 # 键 → (section, 默认值, 类型)
 _DEFAULTS = {
     # [auth]
-    "OPEN_ID":        ("auth", "", str),
+    # 凭证：手机号 + 慧湖通用户 UID（loginByPhoneAndUid 换 satoken）。
+    # 注意键名不能叫 UID——shell 里 UID 是只读内置变量，会污染环境变量覆盖。
+    "PHONE":          ("auth", "", str),
+    "USER_UID":       ("auth", "", str),
     "SERVICE_NAME":   ("auth", "chinaMobile", str),
     "CLIENT_ID":      ("auth", "6d6bc6f3b5f04107a5fc1c62e39dd5f4", str),
     "API_BASE":       ("auth", "https://api.215123.cn", str),
-    # 步骤 3.5（条件性宽带账号密码提交）：主动查绑定 + 按需绑定。
-    # 仅当平台要求"补宽带账号密码"时使用；不填则该步骤整体跳过。
-    "BROADBAND_ACCOUNT": ("auth", "", str),
-    "BROADBAND_PASSWORD":("auth", "", str),
-    "BIND_SERVICE":   ("auth", "", str),   # 空 = 沿用 SERVICE_NAME 对应 service 值
     # [daemon]
     "INTERVAL":       ("daemon", 30, int),            # 常态探测间隔（秒）
     "WATCH_INTERVAL": ("daemon", 5, int),             # 易断网时间窗内间隔
@@ -130,11 +128,9 @@ class Config:
         return False
 
     def describe_credential(self):
-        text = "OPEN_ID(自动换新,无人值守)" if self._values["OPEN_ID"] else "未配置"
-        if (self._values["BROADBAND_ACCOUNT"]
-                and self._values["BROADBAND_PASSWORD"]):
-            text += " + 宽带账号绑定检查"
-        return text
+        if self._values["PHONE"] and self._values["USER_UID"]:
+            return "手机号+UID(自动换新,无人值守)"
+        return "未配置"
 
 
 def datetime_now():

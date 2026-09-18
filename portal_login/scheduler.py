@@ -106,8 +106,9 @@ class Daemon:
 
     # ------------------------------------------------------------- 运行
     def run(self):
-        if not self.cfg.OPEN_ID:
-            self._log.error("未配置 OPEN_ID，请在 %s 的 [auth] 段设置", self.cfg.path)
+        if not (self.cfg.PHONE and self.cfg.USER_UID):
+            self._log.error("未配置 phone / user_uid，请在 %s 的 [auth] 段设置",
+                            self.cfg.path)
             return 2
 
         self._install_signals()

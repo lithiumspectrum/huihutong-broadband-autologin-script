@@ -144,8 +144,7 @@ class HttpClient:
     def post(self, url, body, headers=None, timeout=15):
         """发起 POST（不跟随跳转）。body 为 str/bytes。
 
-        用于步骤 3.5 的 addBindBroadband（JSON body）。网络不可达时抛
-        HttpClientError。
+        用于 loginByPhoneAndUid（JSON body）。网络不可达时抛 HttpClientError。
         """
         return self._request("POST", url, body, headers, timeout)
 
