@@ -59,12 +59,13 @@ def cmd_detect(args):
 
 # --------------------------------------------------------------------- selftest
 
-def _selftest_config(tmpdir, base, detect_enabled=True):
+def _selftest_config(tmpdir, base, detect_enabled=True, broadband=False):
     """写临时 INI 并返回 Config（同时屏蔽机器上的环境变量覆盖）。"""
     saved = {}
     for key in ("OPEN_ID", "SERVICE_NAME", "CLIENT_ID", "API_BASE", "INTERVAL",
                 "WATCH_INTERVAL", "WATCH_WINDOWS", "PROBE_URL", "STATE_FILE",
-                "OUTAGE_LOG", "TOKEN_CACHE", "DETECT_ENABLED"):
+                "OUTAGE_LOG", "TOKEN_CACHE", "DETECT_ENABLED",
+                "BROADBAND_ACCOUNT", "BROADBAND_PASSWORD", "BIND_SERVICE"):
         if key in os.environ:
             saved[key] = os.environ.pop(key)
 
@@ -75,6 +76,8 @@ def _selftest_config(tmpdir, base, detect_enabled=True):
             "open_id = mock-openid\n"
             "service_name = chinaMobile\n"
             "api_base = %s\n"
+            "broadband_account = %s\n"
+            "broadband_password = %s\n"
             "[daemon]\n"
             "interval = 1\n"
             "watch_windows =\n"
@@ -83,7 +86,10 @@ def _selftest_config(tmpdir, base, detect_enabled=True):
             "outage_log = %s/outages.jsonl\n"
             "token_cache = %s/token.json\n"
             "detect_enabled = %s\n"
-            % (base, base, tmpdir, tmpdir, tmpdir,
+            % (base,
+               "mock-broadband-user" if broadband else "",
+               "mock-broadband-pass" if broadband else "",
+               base, tmpdir, tmpdir, tmpdir,
                "yes" if detect_enabled else "no"))
     return Config(path), saved
 
@@ -140,6 +146,8 @@ def cmd_selftest(args):
             check("②全链路：单拍内上线", ok is True)
             check("②全链路：certificateLogin 调用 1 次", state.mint_count == 1)
             check("②全链路：oauthRedirect 调用 1 次", state.oauth_calls == 1)
+            check("②全链路：未配置宽带账号时不查绑定",
+                  state.select_calls == 0)
             check("②全链路：记录 offline_start", "offline_start" in names)
             check("②全链路：记录 outage_summary 且时长>=0",
                   any(e.get("event") == "outage_summary"
@@ -193,6 +201,42 @@ def cmd_selftest(args):
                   not os.path.isfile(cfg.OUTAGE_LOG))
             check("④检测关闭：状态文件标注 detection_enabled=false",
                   snap and snap.get("detection_enabled") is False)
+        finally:
+            server.shutdown()
+            _restore_env(saved_env)
+            shutil.rmtree(tmp, ignore_errors=True)
+
+        # 场景 5：步骤 3.5 —— 服务商未绑定 → 自动补绑定 → 上线成功
+        tmp = tempfile.mkdtemp(prefix="pl_test_bind_")
+        base, state, server = start_mock("bind")
+        try:
+            cfg, saved_env = _selftest_config(tmp, base, broadband=True)
+            d = Daemon(cfg)
+            d._log.setLevel(logging.ERROR)
+            ok = d.tick()
+            check("⑤按需绑定：未绑定时自动补绑定后上线", ok is True)
+            check("⑤按需绑定：查绑定 1 次", state.select_calls == 1)
+            check("⑤按需绑定：提交绑定 1 次", state.bind_calls == 1)
+            check("⑤按需绑定：绑定后 service 已入库",
+                  1 in state.bound_services)
+            check("⑤按需绑定：oauth 只在绑定后成功 1 次",
+                  state.oauth_calls == 1)
+        finally:
+            server.shutdown()
+            _restore_env(saved_env)
+            shutil.rmtree(tmp, ignore_errors=True)
+
+        # 场景 6：步骤 3.5 —— 已绑定 → 不重复提交，仅一次查询
+        tmp = tempfile.mkdtemp(prefix="pl_test_bound_")
+        base, state, server = start_mock("bound")
+        try:
+            cfg, saved_env = _selftest_config(tmp, base, broadband=True)
+            d = Daemon(cfg)
+            d._log.setLevel(logging.ERROR)
+            ok = d.tick()
+            check("⑥已绑定：直接上线", ok is True)
+            check("⑥已绑定：查绑定 1 次", state.select_calls == 1)
+            check("⑥已绑定：不提交绑定", state.bind_calls == 0)
         finally:
             server.shutdown()
             _restore_env(saved_env)

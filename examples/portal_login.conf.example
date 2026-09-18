@@ -9,6 +9,17 @@ open_id =
 # 运营商：chinaMobile / chinaTelecom / chinaUnicom / local
 service_name = chinaMobile
 
+# 条件性宽带账号密码：eportal "忘记"该设备（路由器重启/长时间离线）且该服务商
+# 未绑定时，平台会要求补交宽带账号密码，否则 oauthRedirect 抛业务 500。
+# 守护会先查绑定（selectBindBroadband），未绑定才提交（addBindBroadband）。
+# 该服务商已绑定时不会重复提交；两项留空则整步跳过（老账号已绑定，通常无需填）。
+# broadband_account =
+# broadband_password =
+
+# 绑定用的 service 数字（0=电信 1=移动 2=联通 3=本地内网），
+# 留空则按 service_name 自动推导
+# bind_service =
+
 # 以下均为可选项，不写则走代码内默认值
 
 # 实测固定值，不用改

@@ -93,7 +93,7 @@ class HttpClient:
             except Exception:
                 pass
 
-    def _raw_request(self, url, headers, timeout):
+    def _raw_request(self, method, url, body, headers, timeout):
         parts, key = self._split(url)
         path = parts.path or "/"
         if parts.query:
@@ -104,10 +104,23 @@ class HttpClient:
             req_headers.update(headers)
 
         conn = self._get_conn(key, timeout)
-        conn.request("GET", path, headers=req_headers)
+        conn.request(method, path, body=body, headers=req_headers)
         resp = conn.getresponse()
-        body = resp.read()  # 必须读完，连接才能复用
-        return Response(resp.status, resp.msg, body, url)
+        raw = resp.read()  # 必须读完，连接才能复用
+        return Response(resp.status, resp.msg, raw, url)
+
+    def _request(self, method, url, body=None, headers=None, timeout=15):
+        """单次请求；连接异常时丢弃旧连接重建重试一次。"""
+        if isinstance(body, str):
+            body = body.encode("utf-8")
+        try:
+            return self._raw_request(method, url, body, headers, timeout)
+        except _CONN_ERRORS:
+            self._drop_conn(self._split(url)[1])
+            try:
+                return self._raw_request(method, url, body, headers, timeout)
+            except _CONN_ERRORS as exc:
+                raise HttpClientError("请求失败: %s (%s)" % (url, exc)) from exc
 
     def get(self, url, headers=None, timeout=15, allow_redirects=True,
             max_redirects=10):
@@ -117,15 +130,7 @@ class HttpClient:
         """
         current = url
         for hop in range(max_redirects + 1):
-            try:
-                resp = self._raw_request(current, headers, timeout)
-            except _CONN_ERRORS:
-                self._drop_conn(self._split(current)[1])
-                try:
-                    resp = self._raw_request(current, headers, timeout)
-                except _CONN_ERRORS as exc:
-                    raise HttpClientError(
-                        "请求失败: %s (%s)" % (current, exc)) from exc
+            resp = self._request("GET", current, None, headers, timeout)
 
             if (not allow_redirects or resp.status not in self.REDIRECT_STATUS
                     or not resp.location()):
@@ -135,6 +140,14 @@ class HttpClient:
             current = urljoin(current, resp.location())
 
         raise HttpClientError("重定向次数过多: %s" % url)
+
+    def post(self, url, body, headers=None, timeout=15):
+        """发起 POST（不跟随跳转）。body 为 str/bytes。
+
+        用于步骤 3.5 的 addBindBroadband（JSON body）。网络不可达时抛
+        HttpClientError。
+        """
+        return self._request("POST", url, body, headers, timeout)
 
     def close(self):
         for conn in list(self._conns.values()):

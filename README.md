@@ -11,6 +11,8 @@
 ## 特性
 
 - **无人值守**：以微信 openId 为唯一永久凭证，自动换发 satoken，401 自动作废重换并重试
+- **条件性宽带绑定自愈**：eportal 忘记设备且服务商未绑定时（oauthRedirect 业务 500），
+  自动查绑定并按需补交宽带账号密码后重试
 - **每日强制下线自愈**：覆盖每日约 12:00 的 RADIUS 踢下线，最坏数秒内自动恢复
 - **智能频率**：常态 30s 探测，易断网时间窗内（默认 11:55-12:10）自动加速到 5s；
   离线时指数退避 `min(2·2^(n-1), retry_cap, 档间隔)`（1s 下限）+ ±20% 抖动
@@ -22,19 +24,24 @@
 
 ## 工作原理
 
-整个登录是"用 HTTP 请求让网关把当前源 IP 加白"，不涉及密码提交：
+整个登录是"用 HTTP 请求让网关把当前源 IP 加白"，多数场景不涉及密码提交：
 
 ```
 ① GET http://connect.rom.miui.com/generate_204   三态探测（204 在线 / 302 或 200-JS跳转 未认证 / 网络异常离线）
 ② 跟随重定向链，提取 eportal login_sso.jsp 基址（作为 redirect_uri）
 ③ GET api.215123.cn/web-app/auth/certificateLogin?openId=<OPEN_ID>   换发 satoken(JWT)
-④ GET api.215123.cn/ac/auth/oauthRedirect（satoken 头）              换一次性 code
-⑤ GET <带 code 的 eportal URL>                                       放行源 IP
-⑥ 复查 generate_204 = 204                                            确认上线
+④ 查 /ac/auth/selectBindBroadband，当前服务商未绑定才 POST addBindBroadband 补交宽带账号密码（条件性）
+⑤ GET api.215123.cn/ac/auth/oauthRedirect（satoken 头）              换一次性 code
+⑥ GET <带 code 的 eportal URL>                                       放行源 IP
+⑦ 复查 generate_204 = 204                                            确认上线
 ```
 
 `oauthRedirect` 返回 401 时，自动用 openId 重新换发 token 并重试一次。
 凭证的唯一作用是让 API 签发一次性 code，证明"该微信用户订购了对应运营商套餐"。
+
+> 第 ④ 步即"条件性宽带账号密码提交"：eportal 忘记该设备（如路由器重启、长时间离线）且
+> 该服务商未绑定时，`oauthRedirect` 会抛业务 500「系统异常，请联系客服」。
+> 配置了 `broadband_account` / `broadband_password` 后守护会自动补绑定；未配置则跳过该步。
 
 > 📄 接口原理、抓包事实、踩坑记录（给未来维护者/AI 的完整逆向档案）：
 > **[PROTOCOL_NOTES.md](PROTOCOL_NOTES.md)**
@@ -89,6 +96,11 @@ openId 是微信用户在该小程序下的永久标识，获取一次永久有�
 open_id = 你的OpenID
 service_name = chinaMobile      ; chinaMobile/chinaTelecom/chinaUnicom/local
 
+; 条件性宽带账号密码（eportal 忘记该设备时自动补绑定用）；
+; 该服务商已绑定则不会提交，留空则整步跳过
+broadband_account = 你的宽带账号
+broadband_password = 你的宽带密码
+
 [daemon]
 interval = 30                   ; 常态探测间隔（秒）
 watch_windows = 11:55-12:10     ; 易断网时间窗，逗号分隔多个，支持跨午夜
@@ -99,6 +111,8 @@ watch_interval = 5              ; 时间窗内探测间隔（秒）
 |---|---|---|---|
 | `open_id` | auth | —（必填） | 微信永久标识 |
 | `service_name` | auth | `chinaMobile` | 运营商 |
+| `broadband_account` / `broadband_password` | auth | 空（跳过） | 条件性补绑定用的宽带账号密码 |
+| `bind_service` | auth | 空 | 绑定用的 `service` 数字，空则按 `service_name` 推导 |
 | `client_id` | auth | `6d6bc6f3b5f04107a5fc1c62e39dd5f4` | 实测固定值，不用改 |
 | `api_base` | auth | `https://api.215123.cn` | 改版重逆时可指向 mock |
 | `interval` / `watch_interval` | daemon | `30` / `5` | 探测间隔（常态/时间窗内） |
@@ -119,7 +133,7 @@ python3 -m portal_login daemon      # 守护主循环（前台运行，适合 sy
 python3 -m portal_login once        # 只跑一拍：在线退 0，离线立即登录，成功 0/失败 1
 python3 -m portal_login status      # 实时状态 JSON
 python3 -m portal_login detect off  # 关闭断网记录（照常认证，适合割接演练）
-python3 -m portal_login selftest    # 本机 mock 全链路自测，16 项断言
+python3 -m portal_login selftest    # 本机 mock 全链路自测，25 项断言
 ```
 
 > `selftest` 依赖仓库中的 `tools/mock_portal.py`（模拟整条门户链路），

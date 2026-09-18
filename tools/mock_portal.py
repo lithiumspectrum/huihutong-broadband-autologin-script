@@ -5,7 +5,10 @@
                                       已认证 204
   /sso/login.html                     200 HTML（最终 URL 含 redirect= 参数，对应现场B）
   /web-app/auth/certificateLogin     200 带递增编号的 satoken
+  /ac/auth/selectBindBroadband       200 已绑定 service 列表
+  /ac/auth/addBindBroadband          200 绑定成功（写入 state.bound_services）
   /ac/auth/oauthRedirect             chain 场景 200；401 场景首次 401、二次 200
+                                     bind/bound 场景：未绑定服务商 → 500「系统异常，请联系客服」
   /eportal/login_sso.jsp             302 success.jsp（同时标记已放行）
 """
 
@@ -21,6 +24,12 @@ class MockState:
         self.authed = scenario == "online"
         self.mint_count = 0
         self.oauth_calls = 0
+        self.select_calls = 0
+        self.bind_calls = 0
+        # bind 场景：服务商未绑定（oauthRedirect 会抛业务 500）
+        # bound 场景：已绑定（oauthRedirect 直接成功）
+        self.require_bind = scenario in ("bind", "bound")
+        self.bound_services = [1] if scenario == "bound" else []
 
 
 def start_mock(scenario="chain"):
@@ -59,6 +68,12 @@ def start_mock(scenario="chain"):
                        "application/json")
 
         def do_GET(self):
+            self._handle()
+
+        def do_POST(self):
+            self._handle()
+
+        def _handle(self):
             parts = urlsplit(self.path)
             path = parts.path
 
@@ -90,6 +105,32 @@ def start_mock(scenario="chain"):
                 })
                 return
 
+            if path == "/ac/auth/selectBindBroadband":
+                state.select_calls += 1
+                self._json(200, {
+                    "success": True, "code": 200, "message": "ok",
+                    "data": [{"id": i, "service": s}
+                             for i, s in enumerate(state.bound_services)],
+                })
+                return
+
+            if path == "/ac/auth/addBindBroadband":
+                state.bind_calls += 1
+                length = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(length) if length else b""
+                try:
+                    payload = json.loads(raw.decode("utf-8"))
+                except ValueError:
+                    self._json(400, {"code": 400, "message": "bad json"})
+                    return
+                if not payload.get("account") or not payload.get("password"):
+                    self._json(400, {"code": 400, "message": "缺少账号或密码"})
+                    return
+                state.bound_services.append(int(payload.get("service")))
+                self._json(200, {"success": True, "code": 200,
+                                 "message": "绑定成功"})
+                return
+
             if path == "/ac/auth/oauthRedirect":
                 state.oauth_calls += 1
                 query = parse_qs(parts.query)
@@ -98,6 +139,11 @@ def start_mock(scenario="chain"):
                     return
                 if query.get("serviceName", [""])[0] != "chinaMobile":
                     self._json(400, {"code": 400, "message": "bad operator"})
+                    return
+                # 模拟真实平台：该服务商未绑定时抛业务 500（HTTP 200）
+                if state.require_bind and 1 not in state.bound_services:
+                    self._json(200, {"success": False, "code": 500,
+                                     "message": "系统异常，请联系客服"})
                     return
                 self._json(200, {
                     "code": 200,

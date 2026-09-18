@@ -65,7 +65,7 @@
 
 ## 3. 完整上线链路
 
-共 4 步，全程裸 curl 实测通过，**API 侧不校验 UA / Referer / 浏览器环境**（前端页有 403，API 没有）。
+共 5 步（3.5 为条件性步骤），全程裸 curl 实测通过，**API 侧不校验 UA / Referer / 浏览器环境**（前端页有 403，API 没有）。
 
 ### 步骤 1：探测 captive portal 三态
 
@@ -131,31 +131,56 @@ Header: satoken: <JWT>
 - token 失效时此接口返回 `code:401`——脚本 OPEN_ID 模式据此重新换发 token 并重试**一次**。
 - 也可以用扫码得到的 SA_TOKEN 调本接口，但它会在每日踢下线后失效。
 
-> ⚠️ **2026-09-18 发现 oauthRedirect 业务 500 异常**：路由器重启/长时间离线后，eportal 可能
-> "忘记"该设备的 MAC/会话状态，此时 oauthRedirect 即使用正确 token + 正确 redirect_uri 仍返回
-> HTTP 200 / body `{"success":false,"message":"系统异常，请联系客服","code":500,...}`。
-> 用户描述：完整登录链路在选完服务商后**条件性地需要输入宽带账号 + 密码**（"有时自动跳过"），
-> 这一**步骤 3.5 当前未实现、未抓包记录**，是 v5 在重启后无法自愈的根因。
-> 假设：12:00 RADIUS 强踢时 MAC 仍在 eportal 缓存 → 跳过 3.5 直接放行；
-> 重启/长时间离线后 MAC 缓存失效 → 触发 3.5 → v5 没补这一步 → oauthRedirect 业务 500。
-> 待抓包补全：见下方"步骤 3.5（待补）"。
+> ⚠️ **2026-09-18 oauthRedirect 业务 500 的根因已确证 = 服务商未绑定宽带账号**：
+> 路由器重启/长时间离线后，eportal "忘记"该设备的 MAC/会话状态，此时 oauthRedirect 即使用
+> 正确 token + 正确 redirect_uri 仍返回 HTTP 200 / body
+> `{"success":false,"message":"系统异常，请联系客服","code":500,...}`。
+> 用户描述的"有时自动跳过"的条件性账号密码步骤即下方**步骤 3.5**（已确证接口形态）。
+> 假设成立：12:00 RADIUS 强踢时 MAC 仍在 eportal 缓存 → 跳过 3.5 直接放行；
+> 重启/长时间离线后 MAC 缓存失效 → 触发 3.5 → 未补这一步则 oauthRedirect 业务 500。
 
-### 步骤 3.5（待补）：条件性账号密码提交 ⚠️ 未抓包
+### 步骤 3.5：条件性宽带账号密码提交（已确证）
 
-**状态**：2026-09-18 由用户报告其存在，但 API 形态未知，尚未抓包确认。
+**来源**：线上静态页 `https://broadband.215123.cn/sso/static/form/bind-broadband-form.html`
+的内联 JS（`sa.addBindBroadband` / 运营商下拉框），2026-09-18 读取源码确证；非抓包推测。
 
-**触发条件**（假设）：
-- oauthRedirect 返回 body `code:500` 且 `message` 含 "系统异常，请联系客服"
-- 此时 eportal 已要求补"宽带账号 + 密码"步骤，但服务端未给出明确提示
+**触发条件**：当前账号在**该服务商**下没有绑定宽带账号 → `oauthRedirect` 抛业务 500
+（HTTP 200 + `code:500` + `message`「系统异常，请联系客服」）。已绑定时自动跳过，这就是
+用户所说"有时自动跳过"的原因。
 
-**待抓包要点**（在 Windows + Fiddler 下走完整链路时确认）：
-1. 在 oauthRedirect 之后是否有额外接口（候选名：`/ac/auth/submitAccount`、`/ac/bandwidth/login`、`/ac/auth/login`）
-2. 请求方法（GET 还是 POST）、参数名、是否仍用 satoken 头
-3. 返回 body 形态、成功后是否回带一次性 code
-4. 提交后是否还需要再调一次 oauthRedirect 才能拿到 code
+**查询已绑定**（判断是否需要补绑定，无副作用）：
 
-**抓到后的实现位置**：`portal_login/portal.py:perform_login` ——
-在 `_oauth_once` 失败且返回 `code:500` 时尝试补提交账号密码，再重试一次 oauth。
+```
+GET https://api.215123.cn/ac/auth/selectBindBroadband
+Header: satoken: <JWT>
+
+→ 200 {"success":true,"code":200,"data":[{"id":...,"service":1,...}, ...]}
+```
+
+**新增绑定**（仅在缺失时提交）：
+
+```
+POST https://api.215123.cn/ac/auth/addBindBroadband
+Header: satoken: <JWT>
+Header: Content-Type: application/json
+Body:   {"service":"1","account":"<宽带账号>","password":"<宽带密码>"}
+
+→ 200 {"success":true,"code":200,"message":"绑定成功"}
+```
+
+要点：
+
+- 三个字段**全部是字符串**——前端 layui 用 `JSON.stringify(data.field)` 提交，`service` 也是 `"1"`。
+- `service` ↔ `serviceName` 映射：`0→chinaTelecom`、`1→chinaMobile`、`2→chinaUnicom`、`3→local`
+  （注意与第 5 节的 `serviceName` 字符串是两套取值，不要混用）。
+- 绑定成功后**不需要**额外动作，直接重试 `oauthRedirect` 即可拿到一次性 code。
+- 该接口是**幂等新增**，重复提交同一服务商不会破坏已有配置；但守护仍按"先查后绑"实现，
+  避免每次上线都写库。
+
+**实现位置**：`portal_login/portal.py` —— `_select_bind()` / `_add_bind()` /
+`_ensure_binding()`，在 `perform_login` 换到 token 之后、`_oauth_once` 之前调用。
+凭证来自 `/etc/portal_login.conf` 的 `broadband_account` / `broadband_password`；
+**未配置这两项时该步骤整体跳过**（老账号已绑定，无需此步）。
 
 ### 步骤 4：访问 eportal URL 完成 IP 放行
 
@@ -169,7 +194,7 @@ GET <上一步 data 里的完整 eportal URL>
 
 > 整个登录是“用 HTTP 请求让网关把当前源 IP 加白”，**多数场景**不涉及密码提交；
 > 凭证的作用仅是让 api.215123.cn 签发一次性 code，证明“这个微信用户订购了该运营商套餐”。
-> 例外见步骤 3.5：eportal 忘 MAC 时条件性要求宽带账号密码，目前未实现也未抓包。
+> 例外见步骤 3.5：eportal 忘 MAC 且该服务商未绑定时，必须先补交宽带账号密码（已实现）。
 
 ## 4. 凭证体系（核心）
 
@@ -383,6 +408,9 @@ procd 以 `python3 -m portal_login daemon` 启动并 respawn；配置为 INI（�
 | api.215123.cn 接口 | 裸 curl 可用，无 WAF/UA 拦截 |
 | certificateLogin(openId) | ✅ 实测 200，只认 openId；token rnStr 每次随机；安全接口不踢会话 |
 | oauthRedirect | ✅ 带 satoken 头成功，返回一次性 code 的 eportal URL |
+| selectBindBroadband | ✅ GET + satoken 头，返回已绑定列表（元素含 `service` int）；判断是否需要补绑定 |
+| addBindBroadband | ✅ POST + satoken 头 + JSON body `{service,account,password}`（全字符串），`code:200` 为成功 |
+| oauthRedirect 业务 500 | HTTP 200 + `code:500`「系统异常，请联系客服」= 该服务商未绑定宽带账号（步骤 3.5） |
 | 最后一跳 | `GET http://10.10.16.101:8080/eportal/login_sso.jsp?code=...` 放行源 IP，302 到 success.jsp |
 | 扫码 SA_TOKEN | JWT 无 exp、rnStr 每次随机、服务端可吊销，每日踢下线后大概率失效 |
 | getOpenId 反查 | 500 `操作失败:null`，死路 |
@@ -391,7 +419,7 @@ procd 以 `python3 -m portal_login daemon` 启动并 respawn；配置为 INI（�
 | 运营商 | chinaMobile（页面第 3 按钮） |
 | 强制下线 | 每日约 12:00，OPEN_ID 模式 30s 内自动恢复 |
 | client_id | `6d6bc6f3b5f04107a5fc1c62e39dd5f4`（改版前固定） |
-| 守护实现 | Python v5（纯标准库，2026-09-15）：selftest 16/16、真实 certificateLogin 验证通过；shell v4 已删除 |
+| 守护实现 | Python v5（纯标准库，2026-09-18）：selftest 25/25、真实 certificateLogin 验证通过；shell v4 已删除 |
 
 ## 14. 证据目录导览
 
