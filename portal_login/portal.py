@@ -42,7 +42,9 @@ def extract_portal_url(client, entry, timeout=15):
 
     # 现场 B：从 SSO URL 截取 redirect= 之后的原文（不再 decode，
     # 与前端 broadband.js 的 getParam('redirect') 行为一致）
-    if "redirect=" in final and "/eportal/" not in final:
+    # 注意：redirect= 的值本身就是 eportal URL，必然含 /eportal/，
+    # 所以不能用 "/eportal/ not in final" 作为分支条件（那会让截取永不触发）
+    if "redirect=" in final:
         final = final.split("redirect=", 1)[1]
     return final
 
