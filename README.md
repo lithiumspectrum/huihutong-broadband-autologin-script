@@ -163,7 +163,26 @@ scheduler.py   主循环：时间窗换档、当拍立即登录、指数退避�
 ssh root@192.168.1.1 'mkdir -p /root/portal_login'
 scp -r portal_login tools root@192.168.1.1:/root/portal_login/
 scp openwrt_portal_login.init root@192.168.1.1:/etc/init.d/portal_login
+```
 
+**部署后预期布局**（`scp -r` 到已存在的 `/root/portal_login/` 会自动形成子目录，注意 `portal_login/portal_login/` 是两层）：
+
+```
+/root/portal_login/
+├── portal_login/      ← Python 包（PYTHONPATH 指向其父目录，即 /root/portal_login）
+│   ├── __init__.py
+│   ├── __main__.py
+│   └── ...（共 9 个模块）
+└── tools/            ← selftest 依赖的 mock_portal.py
+```
+
+> 若启动报 `No module named portal_login`，几乎都是少了一层。自检：
+>
+> ```sh
+> ls /root/portal_login/portal_login/__init__.py
+> ```
+
+```sh
 # ② 本地复制模板 → 填入 open_id → 上传（含凭证的本地副本用完即删）
 cp examples/portal_login.conf.example portal_login.conf
 vi portal_login.conf
