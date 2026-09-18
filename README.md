@@ -257,6 +257,51 @@ scheduler.py   主循环：时间窗换档、当拍立即登录、指数退避�
 
 ## OpenWrt 部署（procd 托管）
 
+两种方式选一种即可。**方式 A** 全程在路由器上完成，不需要电脑，也不需要 scp。
+
+### 方式 A：路由器直接从仓库下载（推荐）
+
+路由器必须**先能上网**（任意设备完成一次门户认证即可）。经 `gh-proxy` 镜像下载
+仓库压缩包，解出 `portal_login/` 与 `tools/`：
+
+```sh
+mkdir -p /root/portal_login && cd /root/portal_login
+
+wget -O main.zip "https://v4.gh-proxy.org/https://github.com/lithiumspectrum/huihutong-broadband-autologin-script/archive/refs/heads/main.zip"
+unzip -o main.zip
+
+# ⚠️ 必须先删旧包再拷贝：cp 到「已存在」的同名目录会嵌成 portal_login/portal_login/portal_login
+rm -rf portal_login tools
+cp -r huihutong-broadband-autologin-script-main/portal_login \
+      huihutong-broadband-autologin-script-main/tools .
+
+# 顺带装好 init 服务脚本与配置模板
+cp huihutong-broadband-autologin-script-main/openwrt_portal_login.init /etc/init.d/portal_login
+cp huihutong-broadband-autologin-script-main/examples/portal_login.conf.example /etc/portal_login.conf
+rm -rf main.zip huihutong-broadband-autologin-script-main
+
+chmod +x /etc/init.d/portal_login && chmod 600 /etc/portal_login.conf
+vi /etc/portal_login.conf                    # 填 phone / user_uid
+/etc/init.d/portal_login enable && /etc/init.d/portal_login start
+```
+
+> **首次部署**可以省掉 `rm -rf portal_login tools`（目录还不存在，不会嵌套）；
+> **更新时不能省**，否则会出现三层 `portal_login/portal_login/portal_login/`，
+> 表现为启动报 `No module named portal_login`。
+>
+> **依赖**：`opkg install python3-light ca-bundle unzip`。
+> 若装不上 `unzip`（busybox 默认不含），改用 tar.gz 免去该依赖：
+>
+> ```sh
+> wget -O main.tar.gz "https://v4.gh-proxy.org/https://github.com/lithiumspectrum/huihutong-broadband-autologin-script/archive/refs/heads/main.tar.gz"
+> tar xzf main.tar.gz        # busybox tar 自带 gzip，无需额外包
+> ```
+>
+> 若 busybox `wget` 报 HTTPS 相关错误，用 `wget --no-check-certificate`，
+> 或 `opkg install wget-ssl` 换用完整版 wget。
+
+### 方式 B：电脑上 scp 上传
+
 ```sh
 # ① 上传代码与 init 服务脚本（电脑上，仓库根目录执行）
 ssh root@192.168.1.1 'mkdir -p /root/portal_login'
@@ -264,7 +309,7 @@ scp -r portal_login tools root@192.168.1.1:/root/portal_login/
 scp openwrt_portal_login.init root@192.168.1.1:/etc/init.d/portal_login
 ```
 
-**部署后预期布局**（`scp -r` 到已存在的 `/root/portal_login/` 会自动形成子目录，注意 `portal_login/portal_login/` 是两层）：
+**部署后预期布局（两种方式相同）**（`scp -r` / `cp` 到已存在的 `/root/portal_login/` 都会自动形成子目录，注意 `portal_login/portal_login/` 是两层）：
 
 ```
 /root/portal_login/
@@ -280,6 +325,8 @@ scp openwrt_portal_login.init root@192.168.1.1:/etc/init.d/portal_login
 > ```sh
 > ls /root/portal_login/portal_login/__init__.py
 > ```
+
+**方式 B 的后续步骤**（方式 A 已包含 ②③，可直接跳到自测）：
 
 ```sh
 # ② 本地复制模板 → 填入 phone / user_uid → 上传（含凭证的本地副本用完即删）

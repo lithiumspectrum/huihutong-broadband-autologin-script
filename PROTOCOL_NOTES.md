@@ -42,6 +42,7 @@
 # 上传（电脑上，仓库根目录）
 scp portal_login/*.py root@192.168.1.1:/root/portal_login/portal_login/
 scp tools/mock_portal.py root@192.168.1.1:/root/portal_login/tools/
+# 或全程在路由器上经 gh-proxy 下载解压（免电脑/scp）：见 README「OpenWrt 部署」方式 A
 
 # 路由器上
 cd /root/portal_login
