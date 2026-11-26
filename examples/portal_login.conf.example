@@ -23,6 +23,13 @@ service_name = chinaMobile
 # api_base = https://api.215123.cn
 
 [daemon]
+# 运行模式：
+#   daemon = 默认，常驻并按 interval 周期探测，断网自动重连
+#   once   = 仅开机执行一次，随后进程退出；以后由 reconnect 人工触发
+# 修改 mode 后须执行 /etc/init.d/portal_login restart；reload 不切换运行模式
+mode = daemon
+
+# 以下频率参数仅 daemon 模式生效；once 模式不会周期探测
 # 常态探测间隔（秒）
 interval = 30
 

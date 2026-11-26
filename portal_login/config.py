@@ -19,6 +19,8 @@ _DEFAULTS = {
     "CLIENT_ID":      ("auth", "6d6bc6f3b5f04107a5fc1c62e39dd5f4", str),
     "API_BASE":       ("auth", "https://api.215123.cn", str),
     # [daemon]
+    # daemon：常驻周期探测（默认，兼容旧配置）；once：开机只执行一次，之后由 reconnect 人工触发。
+    "MODE":           ("daemon", "daemon", str),
     "INTERVAL":       ("daemon", 30, int),            # 常态探测间隔（秒）
     "WATCH_INTERVAL": ("daemon", 5, int),             # 易断网时间窗内间隔
     "WATCH_WINDOWS":  ("daemon", "11:55-12:10", str), # 多个用逗号分隔
@@ -108,6 +110,10 @@ class Config:
                     values[key] = caster(raw)
             except (ValueError, TypeError):
                 values[key] = default
+        # 非法/误写的模式回退为 daemon，避免升级后意外失去自动重连。
+        values["MODE"] = values["MODE"].strip().lower()
+        if values["MODE"] not in ("daemon", "once"):
+            values["MODE"] = "daemon"
         self._values = values
 
     def __getattr__(self, name):
