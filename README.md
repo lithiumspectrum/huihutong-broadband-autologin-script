@@ -1,7 +1,7 @@
 # huihutong-broadband-autologin-script
 
-慧湖通（独墅湖人才公寓）Web 门户认证的无人值守自动登录守护。
-纯 Python 3 标准库实现（3.8+，零第三方依赖），面向 OpenWrt 软路由常驻运行。
+慧湖通（独墅湖人才公寓）Web 门户认证的自动登录工具。
+纯 Python 3 标准库实现（3.8+，零第三方依赖），面向 OpenWrt 软路由运行。
 
 仓库名 huihutong-broadband-autologin-script；Python 包 / 命令 / 服务名均为 `portal_login`，代码本体见 [portal_login/](./portal_login)。
 
@@ -10,20 +10,22 @@
 
 ## 特性
 
+- **双运行模式**：默认 `daemon` 驻留周期探测；可选 `once` 仅开机执行一次，之后由 `reconnect` 人工重连
 - **无人值守**：以手机号 + 登录认证码为唯一永久凭证，自动换发 satoken，
   401 自动作废重换并重试
-- **每日强制下线自愈**：覆盖每日约 12:00 的 RADIUS 踢下线，最坏数秒内自动恢复
-- **智能频率**：常态 30s 探测，易断网时间窗内（默认 11:55-12:10）自动加速到 5s；
+- **每日强制下线自愈**（daemon 模式）：覆盖每日约 12:00 的 RADIUS 踢下线，最坏数秒内自动恢复
+- **智能频率**（daemon 模式）：常态 30s 探测，易断网时间窗内（默认 11:55-12:10）自动加速到 5s；
   离线时指数退避 `min(2·2^(n-1), retry_cap, 档间隔)`（1s 下限）+ ±20% 抖动
 - **断网记录**：JSONL 事件流（断网起止/时长/认证尝试次数）+ 实时状态文件，
   可直接喂给 jq / pandas 做统计分析；记录可随时开关且不影响自动认证
-- **连接复用**：http.client keep-alive 长连接，对真实 API 实测比 curl 冷启动快约 3 倍
-- **健壮**：单拍异常全捕获不退出、连接断线自动重建重试一次、SIGHUP 热重载配置、
+- **连接复用**：http.client keep-alive 长连接，对真实 API 实测比 curl 冷启动快约 3 倍；
+  once 模式退出后进程及其全部连接随即释放
+- **健壮**：单拍异常全捕获不退出、连接断线自动重建重试一次、daemon 支持 SIGHUP 热重载配置、
   SIGTERM 优雅退出、配套 mock 全链路自测
 
 ## 工作原理
 
-整个登录是"用 HTTP 请求让网关把当前源 IP 加白"，多数场景不涉及密码提交：
+整个登录是“用 HTTP 请求让网关把当前源 IP 加白”，多数场景不涉及密码提交：
 
 ```
 ① GET http://connect.rom.miui.com/generate_204   三态探测（204 在线 / 302 或 200-JS跳转 未认证 / 网络异常离线）
@@ -36,7 +38,7 @@
 ```
 
 `oauthRedirect` 返回 401 时，自动用手机号 + 认证码重新换发 token 并重试一次。
-凭证的唯一作用是让 API 签发一次性 code，证明"该用户订购了对应运营商套餐"。
+凭证的唯一作用是让 API 签发一次性 code，证明“该用户订购了对应运营商套餐”。
 
 > ⚠️ 换 token **必须走 `/ac/auth/loginByPhoneAndUid`**。旧的
 > `/web-app/auth/certificateLogin?openId=` 仍会返回 200 和一个结构完全正常的 JWT，
@@ -77,7 +79,7 @@ python3 -m portal_login <命令>
 2. 触发一次登录，两种途径都行（推荐第一种，不用装微信）：
    - **浏览器**：连上未认证的宿舍网 → 访问任意 http 站点 → 门户跳到慧湖通登录页 →
      输入手机号与认证码登录；
-   - **微信 PC 版**打开"慧湖通"小程序，进入"我的"页。
+   - **微信 PC 版**打开“慧湖通”小程序，进入“我的”页。
 3. 在抓包列表找 `POST api.215123.cn/ac/auth/loginByPhoneAndUid`，从请求体里复制
    `phone` 与 `uid`——**`uid` 就是你登录时填的那串「认证码」**（API 字段名叫 uid，
    配置项因此叫 `user_uid`）；`captchaKey` 实测可传空串
@@ -114,9 +116,10 @@ user_uid = 你的认证码          ; API 字段名为 uid，就是登录时填�
 service_name = chinaMobile      ; chinaMobile/chinaTelecom/chinaUnicom/local
 
 [daemon]
-interval = 30                   ; 常态探测间隔（秒）
-watch_windows = 11:55-12:10     ; 易断网时间窗，逗号分隔多个，支持跨午夜
-watch_interval = 5              ; 时间窗内探测间隔（秒）
+mode = daemon                  ; daemon=周期自动重连；once=开机一次+人工 reconnect
+interval = 30                   ; 常态探测间隔（秒），仅 daemon 模式
+watch_windows = 11:55-12:10     ; 易断网时间窗，逗号分隔多个，支持跨午夜，仅 daemon 模式
+watch_interval = 5              ; 时间窗内探测间隔（秒），仅 daemon 模式
 ```
 
 | 键 | 段 | 默认值 | 说明 |
@@ -126,8 +129,9 @@ watch_interval = 5              ; 时间窗内探测间隔（秒）
 | `service_name` | auth | `chinaMobile` | 运营商 |
 | `client_id` | auth | `6d6bc6f3b5f04107a5fc1c62e39dd5f4` | 实测固定值，不用改 |
 | `api_base` | auth | `https://api.215123.cn` | 改版重逆时可指向 mock |
-| `interval` / `watch_interval` | daemon | `30` / `5` | 探测间隔（常态/时间窗内） |
-| `watch_windows` | daemon | `11:55-12:10` | 易断网时间窗 |
+| `mode` | daemon | `daemon` | `daemon` 周期自动重连；`once` 开机单次，之后人工 `reconnect` |
+| `interval` / `watch_interval` | daemon | `30` / `5` | 探测间隔（常态/时间窗内），仅 daemon 模式 |
+| `watch_windows` | daemon | `11:55-12:10` | 易断网时间窗，仅 daemon 模式；留空可取消加速窗口 |
 | `retry_base` / `retry_cap` | daemon | `2` / `30` | 离线重试退避基数/上限 |
 | `jitter` | daemon | `0.2` | ±20% 随机抖动 |
 | `probe_timeout` / `api_timeout` | daemon | `10` / `15` | 超时秒数 |
@@ -144,14 +148,50 @@ watch_interval = 5              ; 时间窗内探测间隔（秒）
 > 只改 `service_name`、时间窗等无凭证项时同样无影响。细节见
 > [PROTOCOL_NOTES.md](PROTOCOL_NOTES.md) 第 15.1 节。
 
+### 运行模式：周期自动重连 / 开机单次 + 人工重连
+
+| 配置 | 开机行为 | 平时行为 | 适用场景 |
+|---|---|---|---|
+| `mode = daemon` | 启动常驻守护，第一拍立即探测/认证 | 按 `interval` 周期探测，离线自动重连；procd 崩溃重启 | 需要无人值守、尽快恢复 |
+| `mode = once` | 只执行一次探测/认证，随后进程退出 | **不扫描、不驻留、不自动重连**；人工运行 `reconnect` | 减少后台连接和资源占用，自行观察网络 |
+
+旧配置没有 `mode` 时默认使用 `daemon`，升级不会改变原有行为。配置值非法时也回退为
+`daemon`，避免误写后失去自动重连。
+
+切换模式需要重启服务，**不能用 reload 切换进程模式**：
+
+```sh
+vi /etc/portal_login.conf                 ; 修改 [daemon] 段的 mode
+/etc/init.d/portal_login restart
+```
+
+`daemon` 模式修改间隔、时间窗等参数仍可 `/etc/init.d/portal_login reload` 热重载。
+`once` 模式没有驻留进程，因此没有 respawn，也没有周期性 keep-alive 连接；
+`HttpClient` 的连接缓存只存在于单次 Python 进程内，进程退出即由系统释放。
+
+两种模式都可手动执行一次：
+
+```sh
+reconnect
+```
+
+- 已在线：只探测一次，退出码 0，不重复登录。
+- 门户掉线：执行一次完整认证并复核，成功退出码 0。
+- WAN 不通或没有门户入口：退出码 1，不驻留重试；稍后可再次运行。
+- `once` 模式开机时若 WAN 尚未就绪，也只尝试一轮，之后需人工 `reconnect`。
+
+手动命令由仓库根目录的 [`openwrt_reconnect.sh`](openwrt_reconnect.sh) 安装；
+默认代码目录为 `/root/portal_login`，可用环境变量 `PORTAL_LOGIN_HOME` 覆盖。
+
 ## 命令
 
 ```sh
 python3 -m portal_login daemon      # 守护主循环（前台运行，适合 systemd/procd 托管）
 python3 -m portal_login once        # 只跑一拍：在线退 0，离线立即登录，成功 0/失败 1
-python3 -m portal_login status      # 实时状态 JSON
+python3 -m portal_login status      # 最近一次状态 JSON；once 模式不会持续更新
 python3 -m portal_login detect off  # 关闭断网记录（照常认证，适合割接演练）
 python3 -m portal_login selftest    # 本机 mock 全链路自测，25 项断言
+reconnect                           # OpenWrt 上手动执行一次 once（需按部署步骤安装）
 ```
 
 > `selftest` 依赖仓库中的 `tools/mock_portal.py`（模拟整条门户链路），
@@ -186,7 +226,7 @@ jq -s '[.[]|select(.event=="outage_summary")] | "共 \(length) 次，累计 \(ma
 没装 jq 就用 `grep outage_summary /etc/portal_login/outages.jsonl | tail -20`。
 
 实时状态在 `state.json`（当前状态、离线已持续秒数、认证尝试次数、最近在线时间），
-`status` 命令直接输出。
+`status` 命令直接输出。`once` 模式只在开机或人工执行时更新它，不应把它当作持续监控结果。
 
 ## 查看日志
 
@@ -199,7 +239,7 @@ jq -s '[.[]|select(.event=="outage_summary")] | "共 \(length) 次，累计 \(ma
 
 ```sh
 logread -e portal_login          # 推荐：只看本服务
-logread -f -e portal_login       # 实时跟踪
+logread -f -e portal_login       # 实时跟踪（仅 daemon 模式持续产生）
 logread -e portal_login | tail -50
 
 logread -e python                # 兜底：按 tag 匹配（会混入其他 python 服务）
@@ -229,7 +269,7 @@ Fri Sep 19 12:00:09 2026 daemon.info python3[12345]: [2026-09-19 12:00:09] INFO 
 服务与实时状态：
 
 ```sh
-/etc/init.d/portal_login status                    # running 判定 + 状态 JSON
+/etc/init.d/portal_login status                    # 驻留进程判定 + 最近一次状态 JSON
 ubus call service list '{"name":"portal_login"}'   # procd 视角：pid / 重启次数
 PYTHONPATH=. python3 -m portal_login status        # 同 state.json 内容
 ```
@@ -245,12 +285,13 @@ cat /etc/portal_login/alerts.jsonl     # 不存在 = 从未发生过长期认证
 > ⚠️ **网络全断不产生告警**：`probe` 阶段（无门户入口 / WAN 断）压根没发认证请求，
 > 不计入 `attempts`，那类故障看 `outages.jsonl` 的 `offline_start`。
 > 完整分工表见 PROTOCOL_NOTES 15.1 第 5 点。
+> `once` 模式没有连续拍，因此不会产生这种周期累积告警。
 
 ## 架构
 
 ```
 __main__.py    CLI: daemon | once | status | detect on/off | selftest
-config.py      INI + 环境变量覆盖 + 时间窗判定（支持跨午夜）
+config.py      INI + 环境变量覆盖 + daemon/once 模式 + 时间窗判定（支持跨午夜）
 httpclient.py  http.client 长连接：按主机缓存、跟随 3xx、断线重建重试一次、天然禁代理
 detector.py    三态探测 → ProbeResult(online/code/redirect/reason)
 auth.py        TokenManager：loginByPhoneAndUid 换发 + 内存/tmpfs 缓存(0600) + 401 作废重换
@@ -261,6 +302,7 @@ scheduler.py   主循环：时间窗换档、当拍立即登录、指数退避�
 
 设计约束：顺序轮询无并发；守护绝不为单拍异常退出；token 永不出现在日志中；
 禁用代理环境变量（认证流量必须 WAN 直连，否则 eportal 内网地址不可达/源 IP 不匹配）。
+`once` 复用同一套单拍逻辑，但直接返回，不进入循环。
 
 ## OpenWrt 部署（procd 托管）
 
@@ -282,13 +324,14 @@ rm -rf portal_login tools
 cp -r huihutong-broadband-autologin-script-main/portal_login \
       huihutong-broadband-autologin-script-main/tools .
 
-# 顺带装好 init 服务脚本与配置模板
+# 顺带装好 init 服务脚本、人工重连命令与配置模板
 cp huihutong-broadband-autologin-script-main/openwrt_portal_login.init /etc/init.d/portal_login
+cp huihutong-broadband-autologin-script-main/openwrt_reconnect.sh /usr/bin/reconnect
 cp huihutong-broadband-autologin-script-main/examples/portal_login.conf.example /etc/portal_login.conf
 rm -rf main.zip huihutong-broadband-autologin-script-main
 
-chmod +x /etc/init.d/portal_login && chmod 600 /etc/portal_login.conf
-vi /etc/portal_login.conf                    # 填 phone / user_uid
+chmod +x /etc/init.d/portal_login /usr/bin/reconnect && chmod 600 /etc/portal_login.conf
+vi /etc/portal_login.conf                    # 填 phone / user_uid，并选择 mode = daemon 或 once
 /etc/init.d/portal_login enable && /etc/init.d/portal_login start
 ```
 
@@ -310,11 +353,15 @@ vi /etc/portal_login.conf                    # 填 phone / user_uid
 ### 方式 B：电脑上 scp 上传
 
 ```sh
-# ① 上传代码与 init 服务脚本（电脑上，仓库根目录执行）
+# ① 上传代码、init 服务脚本与人工重连命令（电脑上，仓库根目录执行）
 ssh root@192.168.1.1 'mkdir -p /root/portal_login'
 scp -r portal_login tools root@192.168.1.1:/root/portal_login/
 scp openwrt_portal_login.init root@192.168.1.1:/etc/init.d/portal_login
+scp openwrt_reconnect.sh root@192.168.1.1:/usr/bin/reconnect
 ```
+
+> 新版 OpenSSH 的 scp 默认使用 SFTP；若路由器没有 `sftp-server`，给 scp 加 `-O`，
+> 改用传统 SCP 协议。
 
 **部署后预期布局（两种方式相同）**（`scp -r` / `cp` 到已存在的 `/root/portal_login/` 都会自动形成子目录，注意 `portal_login/portal_login/` 是两层）：
 
@@ -336,7 +383,7 @@ scp openwrt_portal_login.init root@192.168.1.1:/etc/init.d/portal_login
 **方式 B 的后续步骤**（方式 A 已包含 ②③，可直接跳到自测）：
 
 ```sh
-# ② 本地复制模板 → 填入 phone / user_uid → 上传（含凭证的本地副本用完即删）
+# ② 本地复制模板 → 填入 phone / user_uid、选择 mode → 上传（含凭证的本地副本用完即删）
 cp examples/portal_login.conf.example portal_login.conf
 vi portal_login.conf
 scp portal_login.conf root@192.168.1.1:/etc/portal_login.conf
@@ -344,7 +391,7 @@ rm portal_login.conf
 
 # ③ 路由器上：设权限、注册开机自启并启动
 ssh root@192.168.1.1 'chmod 600 /etc/portal_login.conf && \
-  chmod +x /etc/init.d/portal_login && \
+  chmod +x /etc/init.d/portal_login /usr/bin/reconnect && \
   /etc/init.d/portal_login enable && \
   /etc/init.d/portal_login start'
 ```
@@ -355,10 +402,12 @@ ssh root@192.168.1.1 'chmod 600 /etc/portal_login.conf && \
 ssh root@192.168.1.1 'cd /root/portal_login && PYTHONPATH=. python3 -m portal_login selftest'
 ```
 
-procd 服务要点：`command /usr/bin/python3 -m portal_login daemon`、
-`env PYTHONPATH=/root/portal_login`、`respawn` 崩溃重启、
-reload 用 `procd_send_signal <服务名> '*' HUP` 发 SIGHUP 热重载。
-完整 init 脚本见仓库根目录 `openwrt_portal_login.init`。
+procd 服务要点：`env PYTHONPATH=/root/portal_login`；init 通过 `Config().MODE`
+选择 `command /usr/bin/python3 -m portal_login daemon` 或 `... once`。
+仅 daemon 模式配置 `respawn` 崩溃重启；once 模式配置 respawn 会导致退出后再次被拉起，
+违背“只执行一次”的目的。reload 用 `procd_send_signal <服务名> '*' HUP` 发 SIGHUP 热重载，
+仅对 daemon 有意义；切换 mode 必须 restart。完整脚本见仓库根目录
+`openwrt_portal_login.init`，人工命令见 `openwrt_reconnect.sh`。
 
 数据落盘约定：`/tmp`（tmpfs）放 state/token/控制文件，重启即弃；
 `/etc`（overlay）放 outages.jsonl 与 alerts.jsonl，每次断网仅追加约 3 行、
@@ -378,4 +427,4 @@ reload 用 `procd_send_signal <服务名> '*' HUP` 发 SIGHUP 热重载。
 
 ## License
 
-MIT，见 [LICENSE](LICENSE)。
+MIT，见 [LICENSE](LICENSE)。
